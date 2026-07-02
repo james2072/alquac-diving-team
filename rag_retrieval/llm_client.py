@@ -8,16 +8,8 @@ LLM_MODEL in .env — no code change needed.
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-# Add root folder to sys.path to allow importing config from rag_runner
-_root_parent = Path(__file__).resolve().parent.parent
-if str(_root_parent) not in sys.path:
-    sys.path.append(str(_root_parent))
-
 from openai import OpenAI
-from rag_runner.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from configs.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 
 # Single client instance (re-used across calls)
 _client: OpenAI | None = None

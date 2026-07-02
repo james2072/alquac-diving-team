@@ -6,13 +6,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Add root folder to sys.path to allow importing from rag_runner
-_root_parent = Path(__file__).resolve().parent.parent
-if str(_root_parent) not in sys.path:
-    sys.path.append(str(_root_parent))
+_project_root = Path(__file__).resolve().parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.append(str(_project_root))
 
-from rag_runner.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
-from llm_client import chat
+from configs.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from rag_retrieval.llm_client import chat
 
 
 def main() -> None:

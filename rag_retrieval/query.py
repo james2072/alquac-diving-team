@@ -15,14 +15,18 @@ import argparse
 import sys
 from pathlib import Path
 
-# Add root folder to sys.path to allow importing from rag_runner
-_root_parent = Path(__file__).resolve().parent.parent
-if str(_root_parent) not in sys.path:
-    sys.path.append(str(_root_parent))
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
-from rag_runner.config import EMBEDDINGS_SAVE, NUM_RESULTS
+_project_root = Path(__file__).resolve().parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.append(str(_project_root))
+
+from configs.config import EMBEDDINGS_SAVE, NUM_RESULTS
 from rag_runner.embedder import build_embeddings
-from rag import answer_query
+from rag_retrieval.rag import answer_query
 
 
 def main() -> None:

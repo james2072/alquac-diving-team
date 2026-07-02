@@ -6,8 +6,14 @@ JSON instead of a PDF.
 """
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 import numpy as np
 import pandas as pd
@@ -15,14 +21,14 @@ import torch
 from sentence_transformers import SentenceTransformer, util
 from tqdm.auto import tqdm
 
-from config import (
+from configs.config import (
     CHUNK_MIN_TOKENS,
     EMBEDDING_DEVICE,
     EMBEDDING_MODEL,
     EMBEDDINGS_SAVE,
     CORPUS_JSON,
 )
-from corpus_loader import load_law_corpus
+from rag_runner.corpus_loader import load_law_corpus
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +119,7 @@ def _load_embeddings(save_path: Path) -> tuple[pd.DataFrame, torch.Tensor]:
     """
     df = pd.read_parquet(save_path, engine="pyarrow")
     # embedding column comes back as list[float] — convert directly to tensor
-    embeddings = torch.tensor(df["embedding"].tolist(), dtype=torch.float32).to(EMBEDDING_DEVICE)
+    embeddings = torch.tensor(np.array(df["embedding"].tolist()), dtype=torch.float32).to(EMBEDDING_DEVICE)
     print(f"[INFO] Loaded {len(df)} embeddings (shape {embeddings.shape})")
     return df, embeddings
 

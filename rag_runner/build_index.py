@@ -11,10 +11,15 @@ Options:
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-from config import CORPUS_JSON, EMBEDDINGS_SAVE
-from embedder import build_embeddings
+_project_root = Path(__file__).resolve().parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.append(str(_project_root))
+
+from configs.config import CORPUS_JSON, EMBEDDINGS_SAVE
+from rag_runner.embedder import build_embeddings
 
 
 def main() -> None:

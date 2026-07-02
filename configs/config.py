@@ -15,8 +15,11 @@ from dotenv import load_dotenv
 import os
 import torch
 
-# Load .env file from the parent directory of this runner folder
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+# Project root directory (ALQUAC/)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Load .env file from the project root directory
+load_dotenv(PROJECT_ROOT / ".env")
 
 # ── LLM (OpenAI-compatible – works with Google AI Studio, OpenAI, Ollama …) ──
 LLM_API_KEY: str  = os.getenv("LLM_API_KEY", "")                 # your personal key
@@ -33,8 +36,5 @@ CHUNK_MIN_TOKENS: int = int(os.getenv("CHUNK_MIN_TOKENS", "30"))
 NUM_RESULTS: int      = int(os.getenv("NUM_RESULTS", "5"))
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-_root = Path(__file__).resolve().parent
-_root_parent = _root.parent
-
-CORPUS_JSON: Path     = (_root_parent / "data" / "corpus" / "corpus_law_pub.json").resolve()
-EMBEDDINGS_SAVE: Path = (_root_parent / "data" / "output" / "law_embeddings.parquet").resolve()
+CORPUS_JSON: Path     = (PROJECT_ROOT / "data" / "corpus" / "corpus_law_pub.json").resolve()
+EMBEDDINGS_SAVE: Path = (PROJECT_ROOT / "data" / "output" / "law_embeddings.parquet").resolve()

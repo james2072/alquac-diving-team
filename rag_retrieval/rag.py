@@ -11,14 +11,14 @@ import torch
 import sys
 from pathlib import Path
 
-# Add root folder to sys.path to allow importing from rag_runner
-_root_parent = Path(__file__).resolve().parent.parent
-if str(_root_parent) not in sys.path:
-    sys.path.append(str(_root_parent))
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
-from rag_runner.config import NUM_RESULTS
+from configs.config import NUM_RESULTS
 from rag_runner.embedder import get_embedding_model, retrieve_top_k
-from llm_client import chat
+from rag_retrieval.llm_client import chat
 
 
 # ---------------------------------------------------------------------------
