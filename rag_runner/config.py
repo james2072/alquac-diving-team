@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from dotenv import load_dotenv
 import os
+import torch
 
 # Load .env file from the parent directory of this runner folder
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -21,11 +22,11 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 LLM_API_KEY: str  = os.getenv("LLM_API_KEY", "")                 # your personal key
 LLM_BASE_URL: str = os.getenv("LLM_BASE_URL",                     # endpoint base URL
                                "https://generativelanguage.googleapis.com/v1beta/openai/")
-LLM_MODEL: str    = os.getenv("LLM_MODEL", "gemini-2.0-flash")    # model name
+LLM_MODEL: str    = os.getenv("LLM_MODEL", "gemini-2.5-flash")    # model name
 
 # ── Embedding (always local, no API needed) ───────────────────────────────────
 EMBEDDING_MODEL: str  = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
-EMBEDDING_DEVICE: str = os.getenv("EMBEDDING_DEVICE", "cpu")
+EMBEDDING_DEVICE: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ── RAG ───────────────────────────────────────────────────────────────────────
 CHUNK_MIN_TOKENS: int = int(os.getenv("CHUNK_MIN_TOKENS", "30"))
@@ -35,15 +36,5 @@ NUM_RESULTS: int      = int(os.getenv("NUM_RESULTS", "5"))
 _root = Path(__file__).resolve().parent
 _root_parent = _root.parent
 
-def _resolve_path(env_key: str, default: Path) -> Path:
-    val = os.getenv(env_key)
-    if not val:
-        return default
-    p = Path(val)
-    if p.is_absolute():
-        return p
-    # Resolve relative paths relative to the project root directory
-    return (_root_parent / p).resolve()
-
-CORPUS_JSON: Path     = _resolve_path("CORPUS_JSON", _root_parent / "corpus_law_pub.json")
-EMBEDDINGS_SAVE: Path = _resolve_path("EMBEDDINGS_SAVE", _root_parent / "data" / "law_embeddings.parquet")
+CORPUS_JSON: Path     = (_root_parent / "data" / "corpus" / "corpus_law_pub.json").resolve()
+EMBEDDINGS_SAVE: Path = (_root_parent / "data" / "output" / "law_embeddings.parquet").resolve()
