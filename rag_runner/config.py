@@ -1,0 +1,49 @@
+"""
+config.py – Centralised settings loaded from .env
+
+To switch LLM source, only change these 3 variables in .env:
+    LLM_API_KEY   – your personal API key for the endpoint
+    LLM_BASE_URL  – base URL of the OpenAI-compatible API
+    LLM_MODEL     – model name as recognised by that endpoint
+
+Different providers (Google AI Studio, OpenAI, Ollama …) speak the same
+OpenAI-compatible protocol, so no other code needs to change.
+"""
+from __future__ import annotations
+from pathlib import Path
+from dotenv import load_dotenv
+import os
+
+# Load .env file from the parent directory of this runner folder
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+# ── LLM (OpenAI-compatible – works with Google AI Studio, OpenAI, Ollama …) ──
+LLM_API_KEY: str  = os.getenv("LLM_API_KEY", "")                 # your personal key
+LLM_BASE_URL: str = os.getenv("LLM_BASE_URL",                     # endpoint base URL
+                               "https://generativelanguage.googleapis.com/v1beta/openai/")
+LLM_MODEL: str    = os.getenv("LLM_MODEL", "gemini-2.0-flash")    # model name
+
+# ── Embedding (always local, no API needed) ───────────────────────────────────
+EMBEDDING_MODEL: str  = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+EMBEDDING_DEVICE: str = os.getenv("EMBEDDING_DEVICE", "cpu")
+
+# ── RAG ───────────────────────────────────────────────────────────────────────
+CHUNK_MIN_TOKENS: int = int(os.getenv("CHUNK_MIN_TOKENS", "30"))
+NUM_RESULTS: int      = int(os.getenv("NUM_RESULTS", "5"))
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+_root = Path(__file__).resolve().parent
+_root_parent = _root.parent
+
+def _resolve_path(env_key: str, default: Path) -> Path:
+    val = os.getenv(env_key)
+    if not val:
+        return default
+    p = Path(val)
+    if p.is_absolute():
+        return p
+    # Resolve relative paths relative to the project root directory
+    return (_root_parent / p).resolve()
+
+CORPUS_JSON: Path     = _resolve_path("CORPUS_JSON", _root_parent / "corpus_law_pub.json")
+EMBEDDINGS_SAVE: Path = _resolve_path("EMBEDDINGS_SAVE", _root_parent / "data" / "law_embeddings.parquet")
