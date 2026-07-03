@@ -38,3 +38,5 @@ NUM_RESULTS: int      = int(os.getenv("NUM_RESULTS", "5"))
 # ── Paths ─────────────────────────────────────────────────────────────────────
 CORPUS_JSON: Path     = (PROJECT_ROOT / "data" / "corpus" / "corpus_law_pub.json").resolve()
 EMBEDDINGS_SAVE: Path = (PROJECT_ROOT / "data" / "output" / "law_embeddings.parquet").resolve()
+FAISS_INDEX: Path     = (PROJECT_ROOT / "data" / "output" / "law.faiss").resolve()
+BM25_INDEX: Path      = (PROJECT_ROOT / "data" / "output" / "law_bm25.pkl").resolve()

@@ -2,16 +2,16 @@
 query.py – Interactive CLI to query the law RAG system.
 
 Usage:
-    python query.py "Điều kiện để thành lập tổ chức tín dụng là gì?"
+    python -m rag_retrieval.query "Điều kiện để thành lập tổ chức tín dụng là gì?"
 
 Options:
     --k      Number of retrieved articles (default from .env NUM_RESULTS).
+    --alpha  Weight for semantic vs keyword (0.5 = balanced, 0.7 = prefer semantic).
     --quiet  Don't print retrieved sources, only the final answer.
 """
 from __future__ import annotations
 
 import argparse
-
 import sys
 from pathlib import Path
 
@@ -24,31 +24,36 @@ _project_root = Path(__file__).resolve().parent.parent
 if str(_project_root) not in sys.path:
     sys.path.append(str(_project_root))
 
-from configs.config import EMBEDDINGS_SAVE, NUM_RESULTS
-from rag_runner.embedder import build_embeddings
+from configs.config import NUM_RESULTS
+from rag_retrieval.hybrid_retriever import HybridRetriever
 from rag_retrieval.rag import answer_query
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Query the law RAG system.")
     parser.add_argument("query", nargs="?", default=None, help="Question to ask.")
-    parser.add_argument("--k",     type=int, default=NUM_RESULTS)
+    parser.add_argument("--k",     type=int,   default=NUM_RESULTS)
+    parser.add_argument("--alpha", type=float, default=0.5,
+                        help="Weight for semantic search (0=BM25 only, 1=FAISS only).")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
-    # Load (or build) the index
-    df, embeddings = build_embeddings()
+    # Load indexes (builds from parquet if not cached)
+    retriever = HybridRetriever.from_disk()
 
     # Single query mode
     if args.query:
-        result = answer_query(args.query, df, embeddings, k=args.k, verbose=not args.quiet)
+        result = answer_query(
+            args.query, retriever, k=args.k, alpha=args.alpha,
+            verbose=not args.quiet,
+        )
         print("\n" + "=" * 60)
         print("ANSWER:\n")
         print(result["answer"])
         return
 
     # Interactive loop
-    print("\nLaw RAG – type your question (or 'quit' to exit)\n")
+    print("\nLaw RAG (Hybrid FAISS+BM25) – type your question (or 'quit' to exit)\n")
     while True:
         try:
             query = input("❯ ").strip()
@@ -56,7 +61,10 @@ def main() -> None:
             break
         if not query or query.lower() in {"quit", "exit", "q"}:
             break
-        result = answer_query(query, df, embeddings, k=args.k, verbose=not args.quiet)
+        result = answer_query(
+            query, retriever, k=args.k, alpha=args.alpha,
+            verbose=not args.quiet,
+        )
         print("\n" + "=" * 60)
         print("ANSWER:\n")
         print(result["answer"])
