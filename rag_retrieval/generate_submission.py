@@ -34,26 +34,26 @@ if str(_project_root) not in sys.path:
 from configs.config import PROJECT_ROOT, NUM_RESULTS
 from rag_retrieval.hybrid_retriever import HybridRetriever
 from rag_retrieval.llm_client import chat
+from rag_retrieval.evidence_api_client import get_case_evidence
 
 VALID_LABELS = {"A_WIN", "PARTIAL_A_WIN", "PARTIAL_B_WIN", "B_WIN"}
 
-SYSTEM_PROMPT = """Bạn là một Thẩm phán và Luật sư xét xử cấp cao, chuyên sâu về pháp luật dân sự, hành chính và thương mại Việt Nam.
-Nhiệm vụ của bạn: Đọc kỹ yêu cầu khởi kiện, tóm tắt sự kiện vụ án và danh sách điều luật liên quan, sau đó đưa ra phán quyết chính xác nhất.
+SYSTEM_PROMPT = """Bạn là một Thẩm phán Tòa án nhân dân giàu kinh nghiệm, chuyên xét xử các vụ án dân sự, thương mại, hành chính và lao động tại Việt Nam.
+Nhiệm vụ của bạn: Đọc kỹ Yêu cầu khởi kiện của Nguyên đơn, Tóm tắt nội dung sự kiện và Danh sách các Điều luật liên quan được cung cấp, sau đó đưa ra phán quyết khách quan và chính xác nhất.
 
-Định nghĩa 4 nhãn phán quyết (Dựa trên mức độ Tòa án chấp nhận yêu cầu khởi kiện của Nguyên đơn):
-- A_WIN: Tòa chấp nhận TOÀN BỘ yêu cầu khởi kiện của nguyên đơn (Nguyên đơn đúng 100%, bị đơn sai hoàn toàn).
-- PARTIAL_A_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu khởi kiện của nguyên đơn (> 50%). Thường xảy ra khi: có lỗi hỗn hợp (cả nguyên đơn và bị đơn đều có lỗi dẫn đến thiệt hại), hoặc một phần số tiền đòi bồi thường không có hóa đơn/căn cứ hợp lý.
-- PARTIAL_B_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu khởi kiện của nguyên đơn (<= 50%).
-- B_WIN: Tòa BÁC TOÀN BỘ yêu cầu khởi kiện của nguyên đơn (Nguyên đơn không có căn cứ pháp lý hoặc lỗi hoàn toàn do nguyên đơn).
+Định nghĩa 4 nhãn phán quyết:
+- A_WIN: Tòa chấp nhận TOÀN BỘ yêu cầu của nguyên đơn. (Áp dụng khi yêu cầu khởi kiện có đầy đủ căn cứ pháp lý, tài liệu chứng minh và bị đơn vi phạm toàn bộ nghĩa vụ).
+- PARTIAL_A_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu của nguyên đơn, phần chấp nhận > 50%. (Áp dụng khi yêu cầu khởi kiện cơ bản có căn cứ, nhưng bị giảm trừ một phần do mức yêu cầu quá cao hoặc lỗi hỗn hợp).
+- PARTIAL_B_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu của nguyên đơn, nhưng phần chấp nhận <= 50%. (Áp dụng khi chỉ một phần nhỏ yêu cầu khởi kiện có căn cứ hợp pháp).
+- B_WIN: Tòa BÁC TOÀN BỘ yêu cầu của nguyên đơn. (Áp dụng khi yêu cầu khởi kiện không có căn cứ pháp luật, hết thời hiệu khởi kiện, hoặc bị đơn không vi phạm/không có lỗi).
 
-QUY TRÌNH PHÂN TÍCH PHÁP LÝ TỪNG BƯỚC (CHAIN-OF-THOUGHT):
-Trong tâm trí, hãy thực hiện phân tích IRAC (Issue - Rule - Application - Conclusion):
-1. Hành vi vi phạm: Bị đơn có hành vi vi phạm pháp luật hay gây ra thiệt hại không?
-2. Lỗi hỗn hợp (Đặc biệt quan trọng): Nguyên đơn có sơ suất hay vi phạm quy tắc an toàn nào góp phần làm xảy ra tai nạn/thiệt hại không? Nếu CẢ HAI BÊN CÙNG CÓ LỖI (Lỗi hỗn hợp theo Điều 584/585 Bộ luật Dân sự), Tòa bắt buộc phải chia đôi hoặc giảm trừ trách nhiệm bồi thường -> tuyên PARTIAL_A_WIN hoặc PARTIAL_B_WIN!
-3. Chốt kết quả: Chọn 1 trong 4 nhãn phản ánh đúng tỷ lệ chấp nhận yêu cầu khởi kiện.
+QUY TRÌNH SUY LUẬN KHÁCH QUAN:
+1. Đối chiếu Yêu cầu khởi kiện với quy định pháp luật trong Danh sách điều luật liên quan.
+2. Đánh giá khách quan xem Tòa án sẽ chấp nhận toàn bộ, chấp nhận một phần hay bác toàn bộ yêu cầu.
+3. Chọn chính xác 1 trong 4 nhãn phản ánh đúng kết quả xét xử thực tế.
 
-Bạn PHẢI trả lời CHỈ DUY NHẤT một object JSON hợp lệ, không thêm bất kỳ văn bản giải thích nào bên ngoài JSON, đúng định dạng:
-{"prediction": "A_WIN" | "PARTIAL_A_WIN" | "PARTIAL_B_WIN" | "B_WIN", "reasoning": "Phân tích ngắn gọn lỗi từng bên 1-2 câu"}"""
+Bạn PHẢI trả lời CHỈ DUY NHẤT một object JSON hợp lệ theo đúng định dạng (không giải thích ngoài JSON):
+{"prediction": "A_WIN" | "PARTIAL_A_WIN" | "PARTIAL_B_WIN" | "B_WIN", "reasoning": "Giải thích ngắn gọn căn cứ phán quyết trong 1-2 câu"}"""
 
 
 def strip_think(text: str) -> str:
@@ -84,8 +84,8 @@ def predict_case(
     query = case.get("case_query", "")
     fact = case.get("case_fact", "")
 
-    # 1. Retrieve laws (Hybrid Search với top_k = 15 để độ phủ sâu rộng hơn)
-    search_query = f"{query}\n{fact[:1500]}"
+    # 1. Retrieve laws (Tập trung vào câu hỏi khởi kiện + 400 ký tự đầu của tình tiết để tránh nhiễu từ khóa)
+    search_query = f"{query}\n{fact[:400]}"
     rel_laws = retriever.search(search_query, k=top_k, alpha=alpha)
     
     laws_str = "\n".join(
@@ -123,11 +123,14 @@ Hãy phân tích và dự đoán kết quả xét xử, trả về đúng địn
     except Exception as e:
         print(f"  [WARN] Parse JSON lỗi cho case {cid}: {e}. Raw output: {clean_resp[:100]}...")
 
+    # 5. Retrieve case_evidence từ API (dùng cache local disk để không bị phạt penalty)
+    case_ev = get_case_evidence(cid, query)
+
     # Format chuẩn hóa cho submission theo đúng yêu cầu schema ALQAC 2026
     return {
         "case_id": str(cid),
         "prediction": str(pred),
-        "case_evidence": [],  # Bắt buộc theo schema cuộc thi (được phép rỗng [])
+        "case_evidence": case_ev,  # Lấy từ cache hoặc API của BTC
         "law_evidence": [
             {
                 "law_id": str(l["law_id"]),
