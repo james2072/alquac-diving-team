@@ -39,21 +39,25 @@ from rag_retrieval.evidence_api_client import get_case_evidence
 VALID_LABELS = {"A_WIN", "PARTIAL_A_WIN", "PARTIAL_B_WIN", "B_WIN"}
 
 SYSTEM_PROMPT = """Bạn là một Thẩm phán Tòa án nhân dân giàu kinh nghiệm, chuyên xét xử các vụ án dân sự, thương mại, hành chính và lao động tại Việt Nam.
-Nhiệm vụ của bạn: Đọc kỹ Yêu cầu khởi kiện của Nguyên đơn, Tóm tắt nội dung sự kiện và Danh sách các Điều luật liên quan được cung cấp, sau đó đưa ra phán quyết khách quan và chính xác nhất.
+Nhiệm vụ của bạn: Đọc kỹ Yêu cầu khởi kiện của Nguyên đơn, Các đoạn chứng cứ tình tiết thu thập được và Danh sách các Điều luật liên quan được cung cấp, sau đó đưa ra phán quyết khách quan và chính xác nhất.
 
 Định nghĩa 4 nhãn phán quyết:
-- A_WIN: Tòa chấp nhận TOÀN BỘ yêu cầu của nguyên đơn. (Áp dụng khi yêu cầu khởi kiện có đầy đủ căn cứ pháp lý, tài liệu chứng minh và bị đơn vi phạm toàn bộ nghĩa vụ).
-- PARTIAL_A_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu của nguyên đơn, phần chấp nhận > 50%. (Áp dụng khi yêu cầu khởi kiện cơ bản có căn cứ, nhưng bị giảm trừ một phần do mức yêu cầu quá cao hoặc lỗi hỗn hợp).
-- PARTIAL_B_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu của nguyên đơn, nhưng phần chấp nhận <= 50%. (Áp dụng khi chỉ một phần nhỏ yêu cầu khởi kiện có căn cứ hợp pháp).
-- B_WIN: Tòa BÁC TOÀN BỘ yêu cầu của nguyên đơn. (Áp dụng khi yêu cầu khởi kiện không có căn cứ pháp luật, hết thời hiệu khởi kiện, hoặc bị đơn không vi phạm/không có lỗi).
+- A_WIN: Tòa chấp nhận TOÀN BỘ yêu cầu của nguyên đơn.
+- PARTIAL_A_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu của nguyên đơn, phần chấp nhận > 50%.
+- PARTIAL_B_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu của nguyên đơn, nhưng phần chấp nhận <= 50%.
+- B_WIN: Tòa BÁC TOÀN BỘ yêu cầu của nguyên đơn.
 
-QUY TRÌNH SUY LUẬN KHÁCH QUAN:
-1. Đối chiếu Yêu cầu khởi kiện với quy định pháp luật trong Danh sách điều luật liên quan.
-2. Đánh giá khách quan xem Tòa án sẽ chấp nhận toàn bộ, chấp nhận một phần hay bác toàn bộ yêu cầu.
-3. Chọn chính xác 1 trong 4 nhãn phản ánh đúng kết quả xét xử thực tế.
+NGUYÊN TẮC SUY LUẬN BẮT BUỘC:
+1. TUYỆT ĐỐI CHỈ suy luận dựa trên các bằng chứng tình tiết (Case Evidence) và quy định pháp luật (Law Evidence) được cung cấp trong prompt. Không được tự ý suy diễn hay giả định thêm chi tiết không có trong dữ liệu.
+2. CHỌN LỌC BẰNG CHỨNG (PICK): Bạn phải chọn ra chính xác từ danh sách chứng cứ (`chunk_id`) và điều luật (`law_id`, `aid`) đã cung cấp những đoạn nào thực sự được bạn dùng làm căn cứ quyết định phán quyết để nộp bài.
 
 Bạn PHẢI trả lời CHỈ DUY NHẤT một object JSON hợp lệ theo đúng định dạng (không giải thích ngoài JSON):
-{"prediction": "A_WIN" | "PARTIAL_A_WIN" | "PARTIAL_B_WIN" | "B_WIN", "reasoning": "Giải thích ngắn gọn căn cứ phán quyết trong 1-2 câu"}"""
+{
+  "prediction": "A_WIN" | "PARTIAL_A_WIN" | "PARTIAL_B_WIN" | "B_WIN",
+  "reasoning": "Giải thích ngắn gọn căn cứ phán quyết dựa trên chứng cứ và điều luật",
+  "selected_case_evidence": ["danh_sách_mã_chunk_id_đã_dùng"],
+  "selected_law_evidence": [{"law_id": "mã_luật", "aid": số_điều}]
+}"""
 
 
 def strip_think(text: str) -> str:
@@ -76,7 +80,7 @@ def extract_last_json(text: str) -> str | None:
 def predict_case(
     case: dict,
     retriever: HybridRetriever,
-    top_k: int = 15,
+    top_k: int = 5,
     alpha: float = 0.5,
 ) -> dict:
     """Dự đoán kết quả cho 1 vụ án."""
@@ -84,7 +88,13 @@ def predict_case(
     query = case.get("case_query", "")
     fact = case.get("case_fact", "")
 
-    # 1. Retrieve laws (Tập trung vào câu hỏi khởi kiện + 400 ký tự đầu của tình tiết để tránh nhiễu từ khóa)
+    # Tạo tập hợp các điều luật hợp lệ từ retriever để post-validate
+    valid_law_aids = getattr(retriever, "valid_law_aids", None)
+    if valid_law_aids is None:
+        valid_law_aids = {(str(row["law_id"]).strip(), int(row["aid"])) for _, row in retriever.df.iterrows()}
+        retriever.valid_law_aids = valid_law_aids
+
+    # 1. Retrieve laws (Top-5 theo dfs_fixed.ipynb)
     search_query = f"{query}\n{fact[:400]}"
     rel_laws = retriever.search(search_query, k=top_k, alpha=alpha)
     
@@ -93,27 +103,24 @@ def predict_case(
         for l in rel_laws
     )
 
-    # 2. Retrieve case_evidence từ API BTC (hoặc cache) trước để đưa vào prompt
+    # 2. Retrieve case_evidence từ API BTC (hoặc cache) với chiến lược đa chiều
     case_ev_data = get_case_evidence(cid, query)
     case_ev_str = "\n".join(
-        f"- [Đoạn chứng cứ {r.get('chunk_id', '')} | Độ liên quan: {r.get('score', 0):.3f}]: {r.get('text', '')}"
+        f"- [{r.get('chunk_id', '')}] {r.get('text', '')[:600]}"
         for r in case_ev_data if isinstance(r, dict) and r.get('text')
     )
 
-    # 3. Build Prompt
+    # 3. Build Prompt (Khử nhiễu: Loại bỏ case_fact thô, chỉ dùng query + evidence đắt giá + Top 5 laws)
     user_prompt = f"""THÔNG TIN VỤ ÁN (Yêu cầu khởi kiện):
 {query}
 
-TÓM TẮT NỘI DUNG SỰ KIỆN VỤ ÁN:
-{fact[:2500]}
-
-CÁC ĐOẠN CHỨNG CỨ TÌNH TIẾT TRỌNG TÂM:
+BẰNG CHỨNG THU THẬP ĐƯỢC (Case Evidence):
 {case_ev_str if case_ev_str else "(Không có chứng cứ bổ sung)"}
 
-CÁC ĐIỀU LUẬT LIÊN QUAN ĐƯỢC TÌM THẤY (Top {len(rel_laws)} điều luật):
+ĐIỀU LUẬT LIÊN QUAN (Top {len(rel_laws)} điều luật):
 {laws_str if laws_str else "(Không tìm thấy điều luật liên quan)"}
 
-Hãy phân tích và dự đoán kết quả xét xử, trả về đúng định dạng JSON yêu cầu."""
+Hãy phân tích, dự đoán kết quả xét xử và chọn ra các bằng chứng/điều luật làm căn cứ, trả về đúng định dạng JSON yêu cầu."""
 
     # 4. Call LLM
     raw_resp = chat(prompt=user_prompt, system=SYSTEM_PROMPT, temperature=0.2)
@@ -122,6 +129,9 @@ Hãy phân tích và dự đoán kết quả xét xử, trả về đúng địn
     # 5. Parse JSON Response
     pred = "B_WIN"  # Fallback mặc định
     reasoning = ""
+    selected_chunks = []
+    selected_laws = []
+
     try:
         js_str = extract_last_json(clean_resp)
         if js_str:
@@ -130,27 +140,44 @@ Hãy phân tích và dự đoán kết quả xét xử, trả về đúng địn
             if candidate in VALID_LABELS:
                 pred = candidate
             reasoning = parsed.get("reasoning", "")
+            selected_chunks = parsed.get("selected_case_evidence", [])
+            selected_laws = parsed.get("selected_law_evidence", [])
     except Exception as e:
         print(f"  [WARN] Parse JSON lỗi cho case {cid}: {e}. Raw output: {clean_resp[:100]}...")
 
-    # Format chuẩn hóa cho submission theo đúng yêu cầu schema ALQAC 2026
-    sub_case_ev = [
-        r["chunk_id"] if isinstance(r, dict) and "chunk_id" in r else str(r)
-        for r in case_ev_data
-        if (isinstance(r, dict) and r.get("chunk_id")) or isinstance(r, str)
-    ]
+    # Validate & Lọc Case Evidence do LLM pick (phải nằm trong tập đã retrieve)
+    valid_retrieved_chunks = {r["chunk_id"] for r in case_ev_data if isinstance(r, dict) and "chunk_id" in r}
+    sub_case_ev = [str(cid_item).strip() for cid_item in selected_chunks if str(cid_item).strip() in valid_retrieved_chunks]
+    # Fallback nếu LLM pick rỗng hoặc sai
+    if not sub_case_ev:
+        sub_case_ev = [r["chunk_id"] for r in case_ev_data if isinstance(r, dict) and "chunk_id" in r]
+
+    # Validate & Lọc Law Evidence do LLM pick (phải có thật trong corpus gốc)
+    sub_law_ev = []
+    if isinstance(selected_laws, list):
+        for le in selected_laws:
+            if isinstance(le, dict) and "law_id" in le and "aid" in le:
+                try:
+                    lid = str(le["law_id"]).strip()
+                    aid = int(le["aid"])
+                    if (lid, aid) in valid_law_aids:
+                        sub_law_ev.append({"law_id": lid, "aid": aid})
+                except (ValueError, TypeError):
+                    pass
+
+    # Fallback nếu LLM pick rỗng hoặc sai
+    if not sub_law_ev:
+        sub_law_ev = [
+            {"law_id": str(l["law_id"]), "aid": int(l["aid"])}
+            for l in rel_laws
+            if (str(l["law_id"]).strip(), int(l["aid"])) in valid_law_aids
+        ]
 
     return {
         "case_id": str(cid),
         "prediction": str(pred),
-        "case_evidence": sub_case_ev,  # Lấy danh sách chunk_id để nộp bài
-        "law_evidence": [
-            {
-                "law_id": str(l["law_id"]),
-                "aid": int(l["aid"]),
-            }
-            for l in rel_laws
-        ],
+        "case_evidence": sub_case_ev,
+        "law_evidence": sub_law_ev,
     }
 
 
@@ -168,7 +195,7 @@ def main():
         default=PROJECT_ROOT / "submission.json",
         help="Đường dẫn lưu file submission kết quả."
     )
-    parser.add_argument("--top-k", type=int, default=15, help="Số điều luật retrieve cho mỗi case.")
+    parser.add_argument("--top-k", type=int, default=5, help="Số điều luật retrieve cho mỗi case.")
     parser.add_argument("--alpha", type=float, default=0.5, help="Trọng số RRF giữa FAISS và BM25.")
     parser.add_argument("--limit", type=int, default=None, help="Chỉ chạy thử N vụ án đầu tiên (để debug).")
     args = parser.parse_args()

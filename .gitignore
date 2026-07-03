@@ -53,5 +53,6 @@ huggingface/
 *.log
 logs/
 
-
 submission.json
+
+references/*
