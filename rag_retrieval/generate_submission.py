@@ -37,17 +37,23 @@ from rag_retrieval.llm_client import chat
 
 VALID_LABELS = {"A_WIN", "PARTIAL_A_WIN", "PARTIAL_B_WIN", "B_WIN"}
 
-SYSTEM_PROMPT = """Bạn là một luật sư và thẩm phán rất giỏi, am hiểu sâu sắc pháp luật Việt Nam.
-Nhiệm vụ của bạn: đọc thông tin vụ án, nội dung sự kiện và điều luật liên quan, sau đó dự đoán kết quả xét xử.
+SYSTEM_PROMPT = """Bạn là một Thẩm phán và Luật sư xét xử cấp cao, chuyên sâu về pháp luật dân sự, hành chính và thương mại Việt Nam.
+Nhiệm vụ của bạn: Đọc kỹ yêu cầu khởi kiện, tóm tắt sự kiện vụ án và danh sách điều luật liên quan, sau đó đưa ra phán quyết chính xác nhất.
 
-Định nghĩa các nhãn (dựa trên mức độ Tòa án chấp nhận yêu cầu của nguyên đơn):
-- A_WIN: Tòa chấp nhận TOÀN BỘ yêu cầu của nguyên đơn.
-- PARTIAL_A_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu của nguyên đơn, và phần được chấp nhận > 50%.
-- PARTIAL_B_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu của nguyên đơn, nhưng phần được chấp nhận <= 50%.
-- B_WIN: Tòa BÁC TOÀN BỘ yêu cầu của nguyên đơn.
+Định nghĩa 4 nhãn phán quyết (Dựa trên mức độ Tòa án chấp nhận yêu cầu khởi kiện của Nguyên đơn):
+- A_WIN: Tòa chấp nhận TOÀN BỘ yêu cầu khởi kiện của nguyên đơn (Nguyên đơn đúng 100%, bị đơn sai hoàn toàn).
+- PARTIAL_A_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu khởi kiện của nguyên đơn (> 50%). Thường xảy ra khi: có lỗi hỗn hợp (cả nguyên đơn và bị đơn đều có lỗi dẫn đến thiệt hại), hoặc một phần số tiền đòi bồi thường không có hóa đơn/căn cứ hợp lý.
+- PARTIAL_B_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu khởi kiện của nguyên đơn (<= 50%).
+- B_WIN: Tòa BÁC TOÀN BỘ yêu cầu khởi kiện của nguyên đơn (Nguyên đơn không có căn cứ pháp lý hoặc lỗi hoàn toàn do nguyên đơn).
 
-Bạn PHẢI trả lời CHỈ DUY NHẤT một object JSON hợp lệ, không thêm bất kỳ văn bản giải thích nào khác bên ngoài JSON, đúng định dạng:
-{"prediction": "A_WIN" | "PARTIAL_A_WIN" | "PARTIAL_B_WIN" | "B_WIN", "reasoning": "Lý do ngắn gọn"}"""
+QUY TRÌNH PHÂN TÍCH PHÁP LÝ TỪNG BƯỚC (CHAIN-OF-THOUGHT):
+Trong tâm trí, hãy thực hiện phân tích IRAC (Issue - Rule - Application - Conclusion):
+1. Hành vi vi phạm: Bị đơn có hành vi vi phạm pháp luật hay gây ra thiệt hại không?
+2. Lỗi hỗn hợp (Đặc biệt quan trọng): Nguyên đơn có sơ suất hay vi phạm quy tắc an toàn nào góp phần làm xảy ra tai nạn/thiệt hại không? Nếu CẢ HAI BÊN CÙNG CÓ LỖI (Lỗi hỗn hợp theo Điều 584/585 Bộ luật Dân sự), Tòa bắt buộc phải chia đôi hoặc giảm trừ trách nhiệm bồi thường -> tuyên PARTIAL_A_WIN hoặc PARTIAL_B_WIN!
+3. Chốt kết quả: Chọn 1 trong 4 nhãn phản ánh đúng tỷ lệ chấp nhận yêu cầu khởi kiện.
+
+Bạn PHẢI trả lời CHỈ DUY NHẤT một object JSON hợp lệ, không thêm bất kỳ văn bản giải thích nào bên ngoài JSON, đúng định dạng:
+{"prediction": "A_WIN" | "PARTIAL_A_WIN" | "PARTIAL_B_WIN" | "B_WIN", "reasoning": "Phân tích ngắn gọn lỗi từng bên 1-2 câu"}"""
 
 
 def strip_think(text: str) -> str:
@@ -70,7 +76,7 @@ def extract_last_json(text: str) -> str | None:
 def predict_case(
     case: dict,
     retriever: HybridRetriever,
-    top_k: int = 5,
+    top_k: int = 15,
     alpha: float = 0.5,
 ) -> dict:
     """Dự đoán kết quả cho 1 vụ án."""
@@ -78,12 +84,12 @@ def predict_case(
     query = case.get("case_query", "")
     fact = case.get("case_fact", "")
 
-    # 1. Retrieve laws (Hybrid Search)
-    search_query = f"{query}\n{fact[:500]}"
+    # 1. Retrieve laws (Hybrid Search với top_k = 15 để độ phủ sâu rộng hơn)
+    search_query = f"{query}\n{fact[:1500]}"
     rel_laws = retriever.search(search_query, k=top_k, alpha=alpha)
     
     laws_str = "\n".join(
-        f"- Luật {l['law_id']} Điều {l['aid']}: {l['text'][:400]}..."
+        f"- Luật {l['law_id']} Điều {l['aid']}: {l['text'][:600]}..."
         for l in rel_laws
     )
 
@@ -92,9 +98,9 @@ def predict_case(
 {query}
 
 TÓM TẮT NỘI DUNG SỰ KIỆN VỤ ÁN:
-{fact[:2000]}
+{fact[:2500]}
 
-CÁC ĐIỀU LUẬT LIÊN QUAN ĐƯỢC TÌM THẤY:
+CÁC ĐIỀU LUẬT LIÊN QUAN ĐƯỢC TÌM THẤY (Top {len(rel_laws)} điều luật):
 {laws_str if laws_str else "(Không tìm thấy điều luật liên quan)"}
 
 Hãy phân tích và dự đoán kết quả xét xử, trả về đúng định dạng JSON yêu cầu."""
@@ -146,7 +152,7 @@ def main():
         default=PROJECT_ROOT / "submission.json",
         help="Đường dẫn lưu file submission kết quả."
     )
-    parser.add_argument("--top-k", type=int, default=NUM_RESULTS, help="Số điều luật retrieve cho mỗi case.")
+    parser.add_argument("--top-k", type=int, default=15, help="Số điều luật retrieve cho mỗi case.")
     parser.add_argument("--alpha", type=float, default=0.5, help="Trọng số RRF giữa FAISS và BM25.")
     parser.add_argument("--limit", type=int, default=None, help="Chỉ chạy thử N vụ án đầu tiên (để debug).")
     args = parser.parse_args()
