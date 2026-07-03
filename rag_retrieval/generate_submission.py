@@ -93,23 +93,33 @@ def predict_case(
         for l in rel_laws
     )
 
-    # 2. Build Prompt
+    # 2. Retrieve case_evidence từ API BTC (hoặc cache) trước để đưa vào prompt
+    case_ev_data = get_case_evidence(cid, query)
+    case_ev_str = "\n".join(
+        f"- [Đoạn chứng cứ {r.get('chunk_id', '')} | Độ liên quan: {r.get('score', 0):.3f}]: {r.get('text', '')}"
+        for r in case_ev_data if isinstance(r, dict) and r.get('text')
+    )
+
+    # 3. Build Prompt
     user_prompt = f"""THÔNG TIN VỤ ÁN (Yêu cầu khởi kiện):
 {query}
 
 TÓM TẮT NỘI DUNG SỰ KIỆN VỤ ÁN:
 {fact[:2500]}
 
+CÁC ĐOẠN CHỨNG CỨ TÌNH TIẾT TRỌNG TÂM:
+{case_ev_str if case_ev_str else "(Không có chứng cứ bổ sung)"}
+
 CÁC ĐIỀU LUẬT LIÊN QUAN ĐƯỢC TÌM THẤY (Top {len(rel_laws)} điều luật):
 {laws_str if laws_str else "(Không tìm thấy điều luật liên quan)"}
 
 Hãy phân tích và dự đoán kết quả xét xử, trả về đúng định dạng JSON yêu cầu."""
 
-    # 3. Call LLM
+    # 4. Call LLM
     raw_resp = chat(prompt=user_prompt, system=SYSTEM_PROMPT, temperature=0.2)
     clean_resp = strip_think(raw_resp)
 
-    # 4. Parse JSON Response
+    # 5. Parse JSON Response
     pred = "B_WIN"  # Fallback mặc định
     reasoning = ""
     try:
@@ -123,14 +133,17 @@ Hãy phân tích và dự đoán kết quả xét xử, trả về đúng địn
     except Exception as e:
         print(f"  [WARN] Parse JSON lỗi cho case {cid}: {e}. Raw output: {clean_resp[:100]}...")
 
-    # 5. Retrieve case_evidence từ API (dùng cache local disk để không bị phạt penalty)
-    case_ev = get_case_evidence(cid, query)
-
     # Format chuẩn hóa cho submission theo đúng yêu cầu schema ALQAC 2026
+    sub_case_ev = [
+        r["chunk_id"] if isinstance(r, dict) and "chunk_id" in r else str(r)
+        for r in case_ev_data
+        if (isinstance(r, dict) and r.get("chunk_id")) or isinstance(r, str)
+    ]
+
     return {
         "case_id": str(cid),
         "prediction": str(pred),
-        "case_evidence": case_ev,  # Lấy từ cache hoặc API của BTC
+        "case_evidence": sub_case_ev,  # Lấy danh sách chunk_id để nộp bài
         "law_evidence": [
             {
                 "law_id": str(l["law_id"]),

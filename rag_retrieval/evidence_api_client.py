@@ -29,23 +29,27 @@ def _save_cache(cache: dict):
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
-def get_case_evidence(case_id: str, query: str, api_key: str | None = None) -> list[str]:
+def get_case_evidence(case_id: str, query: str, api_key: str | None = None) -> list[dict | str]:
     """
-    Retrieve case evidence chunk_ids for a given case using disk cache to avoid re-fetching & penalties.
-    Returns a list of chunk_ids, e.g., ["case_1087_0037_chunk_2"].
+    Retrieve case evidence results (containing chunk_id, text, score) for a given case using disk cache.
+    Returns a list of result dicts, e.g. [{"chunk_id": "...", "text": "...", "score": 0.886}].
     """
     cid = str(case_id).strip()
     cache = _load_cache()
 
     # 1. Check local disk cache first (0 penalty, 0 delay)
     if cid in cache:
-        return cache[cid]
+        cached = cache[cid]
+        # Nếu cache đã lưu dict có chứa 'text', trả về luôn
+        if cached and isinstance(cached[0], dict) and "text" in cached[0]:
+            return cached
+        # Nếu cache cũ chỉ lưu list[str], tiếp tục gọi API bên dưới để lấy đầy đủ text và score
 
     # 2. Get API Token
     token = api_key or os.getenv("ALQAC_TOKEN") or os.getenv("ALQAC_API_KEY") or os.getenv("X_API_KEY")
     if not token:
-        # Nếu chưa cấu hình token, trả về rỗng và không cache để sau này có token gọi lại
-        return []
+        # Nếu chưa cấu hình token, trả về cache cũ (nếu có) hoặc rỗng
+        return cache.get(cid, [])
 
     # 3. Call API with rate-limit handling (max 1 req per 5s)
     headers = {
@@ -67,23 +71,22 @@ def get_case_evidence(case_id: str, query: str, api_key: str | None = None) -> l
                 continue
             elif resp.status_code == 403:
                 print(f"  [API 403] Token X-API-Key không hợp lệ hoặc hết hạn cho {cid}.")
-                return []
+                return cache.get(cid, [])
             
             resp.raise_for_status()
             data = resp.json()
             results = data.get("results", [])
-            chunk_ids = [r["chunk_id"] for r in results if r.get("chunk_id")]
 
-            # Cache lại ngay lập tức vào disk
-            cache[cid] = chunk_ids
+            # Cache lại toàn bộ object results (gồm chunk_id, text, score) vào disk
+            cache[cid] = results
             _save_cache(cache)
 
             # Nghỉ 5.1s sau mỗi lần gọi network thành công đúng luật 1 req/5s của BTC
             time.sleep(5.1)
-            return chunk_ids
+            return results
 
         except Exception as e:
             print(f"  [WARN] Lỗi gọi API Retrieval cho {cid} (lần {attempt+1}/{max_retries}): {e}")
             time.sleep(5)
 
-    return []
+    return cache.get(cid, [])
