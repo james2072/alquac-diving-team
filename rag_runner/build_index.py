@@ -44,16 +44,16 @@ def main() -> None:
                         help="Where to save the embeddings Parquet.")
     args = parser.parse_args()
 
-    # # Step 1: Build embeddings (Parquet)
-    # print("=" * 60)
-    # print("Building embeddings (Parquet)")
-    # print("=" * 60)
-    # df, embeddings = build_embeddings(
-    #     corpus_json=args.corpus,
-    #     save_path=args.save,
-    #     force_rebuild=args.force,
-    # )
-    # print(f"✅  Embeddings ready — {len(df)} chunks, shape {tuple(embeddings.shape)}")
+    # Step 1: Build embeddings (Parquet)
+    print("=" * 60)
+    print("Building embeddings (Parquet)")
+    print("=" * 60)
+    df, embeddings = build_embeddings(
+        corpus_json=args.corpus,
+        save_path=args.save,
+        force_rebuild=args.force,
+    )
+    print(f"✅  Embeddings ready — {len(df)} chunks, shape {tuple(embeddings.shape)}")
 
     # Step 2 + 3: Build FAISS + BM25 indexes
     print("\n" + "=" * 60)

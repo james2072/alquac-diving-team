@@ -32,7 +32,7 @@ EMBEDDING_MODEL: str  = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 EMBEDDING_DEVICE: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ── RAG ───────────────────────────────────────────────────────────────────────
-CHUNK_MIN_TOKENS: int = int(os.getenv("CHUNK_MIN_TOKENS", "30"))
+CHUNK_MIN_TOKENS: int = int(os.getenv("CHUNK_MIN_TOKENS", "10"))
 NUM_RESULTS: int      = int(os.getenv("NUM_RESULTS", "5"))
 
 # ── Paths ─────────────────────────────────────────────────────────────────────

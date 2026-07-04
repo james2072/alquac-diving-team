@@ -6,6 +6,7 @@ pandas
 numpy
 pyarrow>=14.0        # Parquet read/write for embedding storage
 python-dotenv
+underthesea
 
 # ── LLM providers (install only what you need) ────────────────────────────────
 openai>=1.30.0                # for LLM_PROVIDER=openai (also works with Ollama)

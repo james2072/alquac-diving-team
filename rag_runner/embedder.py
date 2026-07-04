@@ -101,7 +101,7 @@ def build_embeddings(
     print(f"[INFO] Embedding done in {time.perf_counter() - t0:.1f}s")
 
     # 4. Store embeddings as native float32 arrays and save as Parquet
-    df["embedding"] = [e.tolist() for e in emb_tensor.cpu()]
+    df["embedding"] = list(emb_tensor.cpu().numpy())
     save_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(save_path, index=False, engine="pyarrow")
     print(f"[INFO] Saved to {save_path}")
