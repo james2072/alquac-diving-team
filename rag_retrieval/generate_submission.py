@@ -66,21 +66,55 @@ def strip_think(text: str) -> str:
 
 
 def extract_last_json(text: str) -> str | None:
-    """Tìm khối {...} cuối cùng trong text trả về từ LLM."""
-    matches = list(re.finditer(r"\{[^{}]*\}", text, flags=re.DOTALL))
-    if not matches:
-        start = text.find('{')
-        end = text.rfind('}')
-        if start != -1 and end != -1 and end > start:
-            return text[start:end+1]
-        return None
-    return matches[-1].group(0)
+    """Tìm và trích xuất khối JSON hợp lệ trong text trả về từ LLM (hỗ trợ nested object/array)."""
+    # 1. Thử tìm khối ```json ... ``` trước
+    md_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+    if md_match:
+        try:
+            json.loads(md_match.group(1))
+            return md_match.group(1)
+        except Exception:
+            pass
+
+    # 2. Tìm từ dấu { đầu tiên đến dấu } cuối cùng
+    start = text.find('{')
+    end = text.rfind('}')
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start:end+1]
+        try:
+            json.loads(candidate)
+            return candidate
+        except Exception:
+            pass
+
+    # 3. Quét từng cặp { ... } cân bằng từ ngoài vào trong
+    start_idx = 0
+    while True:
+        s = text.find('{', start_idx)
+        if s == -1:
+            break
+        depth = 0
+        for i in range(s, len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    cand = text[s:i+1]
+                    try:
+                        json.loads(cand)
+                        return cand
+                    except Exception:
+                        break
+        start_idx = s + 1
+
+    return None
 
 
 def predict_case(
     case: dict,
     retriever: HybridRetriever,
-    top_k: int = 5,
+    top_k: int = 8,
     alpha: float = 0.5,
 ) -> dict:
     """Dự đoán kết quả cho 1 vụ án."""
@@ -94,20 +128,21 @@ def predict_case(
         valid_law_aids = {(str(row["law_id"]).strip(), int(row["aid"])) for _, row in retriever.df.iterrows()}
         retriever.valid_law_aids = valid_law_aids
 
-    # 1. Retrieve laws (Top-5 theo dfs_fixed.ipynb)
-    search_query = f"{query}\n{fact[:400]}"
+    # 1. Retrieve case_evidence từ API BTC (hoặc cache) với chiến lược đa chiều TRƯỚC
+    case_ev_data = get_case_evidence(cid, query)
+    case_ev_str = "\n".join(
+        f"- [{r.get('chunk_id', '')}] {r.get('text', '')[:1500]}"
+        for r in case_ev_data if isinstance(r, dict) and r.get('text')
+    )
+
+    # 2. Retrieve laws (Top-k) bằng cách kết hợp query, fact và top case evidence đắt giá nhất
+    ev_context = " ".join([r.get('text', '')[:200] for r in case_ev_data if isinstance(r, dict) and r.get('text')][:3])
+    search_query = f"{query}\n{fact[:400]}\n{ev_context}"
     rel_laws = retriever.search(search_query, k=top_k, alpha=alpha)
     
     laws_str = "\n".join(
-        f"- Luật {l['law_id']} Điều {l['aid']}: {l['text'][:600]}..."
+        f"- Luật {l['law_id']} Điều {l['aid']}: {l['text'][:1500]}..."
         for l in rel_laws
-    )
-
-    # 2. Retrieve case_evidence từ API BTC (hoặc cache) với chiến lược đa chiều
-    case_ev_data = get_case_evidence(cid, query)
-    case_ev_str = "\n".join(
-        f"- [{r.get('chunk_id', '')}] {r.get('text', '')[:600]}"
-        for r in case_ev_data if isinstance(r, dict) and r.get('text')
     )
 
     # 3. Build Prompt (Khử nhiễu: Loại bỏ case_fact thô, chỉ dùng query + evidence đắt giá + Top 5 laws)
@@ -139,11 +174,15 @@ Hãy phân tích, dự đoán kết quả xét xử và chọn ra các bằng ch
             candidate = parsed.get("prediction", "").strip()
             if candidate in VALID_LABELS:
                 pred = candidate
+            else:
+                print(f"\n  [WARN] Case {cid}: Nhãn '{candidate}' không hợp lệ. Fallback B_WIN.")
             reasoning = parsed.get("reasoning", "")
             selected_chunks = parsed.get("selected_case_evidence", [])
             selected_laws = parsed.get("selected_law_evidence", [])
+        else:
+            print(f"\n  [WARN] Case {cid}: Không tìm thấy khối JSON hợp lệ trong output LLM.")
     except Exception as e:
-        print(f"  [WARN] Parse JSON lỗi cho case {cid}: {e}. Raw output: {clean_resp[:100]}...")
+        print(f"\n  [WARN] Parse JSON lỗi cho case {cid}: {e}. Raw output: {clean_resp[:150]}...")
 
     # Validate & Lọc Case Evidence do LLM pick (phải nằm trong tập đã retrieve)
     valid_retrieved_chunks = {r["chunk_id"] for r in case_ev_data if isinstance(r, dict) and "chunk_id" in r}
@@ -169,7 +208,7 @@ Hãy phân tích, dự đoán kết quả xét xử và chọn ra các bằng ch
     if not sub_law_ev:
         sub_law_ev = [
             {"law_id": str(l["law_id"]), "aid": int(l["aid"])}
-            for l in rel_laws
+            for l in rel_laws[:5]
             if (str(l["law_id"]).strip(), int(l["aid"])) in valid_law_aids
         ]
 
@@ -195,7 +234,7 @@ def main():
         default=PROJECT_ROOT / "submission.json",
         help="Đường dẫn lưu file submission kết quả."
     )
-    parser.add_argument("--top-k", type=int, default=5, help="Số điều luật retrieve cho mỗi case.")
+    parser.add_argument("--top-k", type=int, default=8, help="Số điều luật retrieve cho mỗi case.")
     parser.add_argument("--alpha", type=float, default=0.5, help="Trọng số RRF giữa FAISS và BM25.")
     parser.add_argument("--limit", type=int, default=None, help="Chỉ chạy thử N vụ án đầu tiên (để debug).")
     args = parser.parse_args()

@@ -1,12 +1,15 @@
 # ── Core ─────────────────────────────────────────────────────────────────────
 torch>=2.1.1
 sentence-transformers>=2.7.0
+transformers>=4.40.0   # AutoTokenizer for accurate token counting
 tqdm
 pandas
 numpy
 pyarrow>=14.0        # Parquet read/write for embedding storage
 python-dotenv
 underthesea
+faiss-gpu             # FAISS vector search (use faiss-cpu if no GPU)
+rank_bm25             # BM25 keyword search
 
 # ── LLM providers (install only what you need) ────────────────────────────────
 openai>=1.30.0                # for LLM_PROVIDER=openai (also works with Ollama)

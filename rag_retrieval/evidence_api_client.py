@@ -13,7 +13,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 API_URL = "https://alqac-api.ngrok.pro/retrieve"
 CACHE_FILE = PROJECT_ROOT / "data" / "cache" / "case_evidence_cache.json"
 MAX_CALLS_PER_CASE = 6
-MIN_SCORE = 0.15
+MIN_SCORE = 4.0
 
 
 def _load_cache() -> dict:

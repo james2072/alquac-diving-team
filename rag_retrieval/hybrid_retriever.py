@@ -121,7 +121,7 @@ class HybridRetriever:
         k: int = NUM_RESULTS,
         alpha: float = 0.5,
         rrf_k: int = 60,
-        candidate_multiplier: int = 3,
+        candidate_multiplier: int = 5,
     ) -> list[dict]:
         """
         Hybrid search combining FAISS + BM25 via Reciprocal Rank Fusion.
