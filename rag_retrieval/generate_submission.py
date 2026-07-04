@@ -114,7 +114,7 @@ def extract_last_json(text: str) -> str | None:
 def predict_case(
     case: dict,
     retriever: HybridRetriever,
-    top_k: int = 8,
+    top_k: int = 10,
     alpha: float = 0.5,
 ) -> dict:
     """Dự đoán kết quả cho 1 vụ án."""
@@ -135,8 +135,8 @@ def predict_case(
         for r in case_ev_data if isinstance(r, dict) and r.get('text')
     )
 
-    # 2. Retrieve laws (Top-k) bằng cách kết hợp query, fact và top case evidence đắt giá nhất
-    ev_context = " ".join([r.get('text', '')[:200] for r in case_ev_data if isinstance(r, dict) and r.get('text')][:3])
+    # 2. Retrieve laws (Top-k) bằng cách kết hợp query, fact và toàn bộ ngữ cảnh case evidence
+    ev_context = " ".join([r.get('text', '')[:1000] for r in case_ev_data if isinstance(r, dict) and r.get('text')][:8])
     search_query = f"{query}\n{fact[:400]}\n{ev_context}"
     rel_laws = retriever.search(search_query, k=top_k, alpha=alpha)
     
@@ -184,12 +184,8 @@ Hãy phân tích, dự đoán kết quả xét xử và chọn ra các bằng ch
     except Exception as e:
         print(f"\n  [WARN] Parse JSON lỗi cho case {cid}: {e}. Raw output: {clean_resp[:150]}...")
 
-    # Validate & Lọc Case Evidence do LLM pick (phải nằm trong tập đã retrieve)
-    valid_retrieved_chunks = {r["chunk_id"] for r in case_ev_data if isinstance(r, dict) and "chunk_id" in r}
-    sub_case_ev = [str(cid_item).strip() for cid_item in selected_chunks if str(cid_item).strip() in valid_retrieved_chunks]
-    # Fallback nếu LLM pick rỗng hoặc sai
-    if not sub_case_ev:
-        sub_case_ev = [r["chunk_id"] for r in case_ev_data if isinstance(r, dict) and "chunk_id" in r]
+    # Validate & Lọc Case Evidence: Nộp TOÀN BỘ các chunk đã retrieve được từ API (vì luật chấm là Penalized Case Recall, không bị trừ điểm Precision)
+    sub_case_ev = [r["chunk_id"] for r in case_ev_data if isinstance(r, dict) and "chunk_id" in r]
 
     # Validate & Lọc Law Evidence do LLM pick (phải có thật trong corpus gốc)
     sub_law_ev = []
@@ -208,7 +204,7 @@ Hãy phân tích, dự đoán kết quả xét xử và chọn ra các bằng ch
     if not sub_law_ev:
         sub_law_ev = [
             {"law_id": str(l["law_id"]), "aid": int(l["aid"])}
-            for l in rel_laws[:5]
+            for l in rel_laws[:4]
             if (str(l["law_id"]).strip(), int(l["aid"])) in valid_law_aids
         ]
 
@@ -234,7 +230,7 @@ def main():
         default=PROJECT_ROOT / "submission.json",
         help="Đường dẫn lưu file submission kết quả."
     )
-    parser.add_argument("--top-k", type=int, default=8, help="Số điều luật retrieve cho mỗi case.")
+    parser.add_argument("--top-k", type=int, default=10, help="Số điều luật retrieve cho mỗi case.")
     parser.add_argument("--alpha", type=float, default=0.5, help="Trọng số RRF giữa FAISS và BM25.")
     parser.add_argument("--limit", type=int, default=None, help="Chỉ chạy thử N vụ án đầu tiên (để debug).")
     args = parser.parse_args()

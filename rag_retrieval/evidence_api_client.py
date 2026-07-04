@@ -13,7 +13,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 API_URL = "https://alqac-api.ngrok.pro/retrieve"
 CACHE_FILE = PROJECT_ROOT / "data" / "cache" / "case_evidence_cache.json"
 MAX_CALLS_PER_CASE = 6
-MIN_SCORE = 4.0
+MIN_SCORE = 2.0
 
 
 def _load_cache() -> dict:
@@ -33,32 +33,19 @@ def _save_cache(cache: dict):
 
 
 def build_diverse_queries(case_query: str) -> list[str]:
-    """Sinh danh sách câu truy vấn đa chiều (vai nguyên đơn, bị đơn, chứng cứ, HĐXX, quyết định)."""
-    names = re.findall(
-        r'(?:Ông|Bà|Anh|Chị|Cụ)\s+([A-ZÀ-Ỹ][a-zà-ỹ]+(?:\s+[A-ZÀ-Ỹ][a-zà-ỹ]+){0,3})',
-        case_query,
-    )
-    dispute_match = re.search(r'tranh chấp\s+([^\.]+)', case_query, re.IGNORECASE)
-    dispute = dispute_match.group(1).strip() if dispute_match else case_query[:80]
-
-    plaintiff = names[0] if len(names) > 0 else "nguyên đơn"
-    defendant = names[1] if len(names) > 1 else "bị đơn"
-
-    queries = [
-        case_query[:200],                                              # nguyên văn truy vấn
-        f"yêu cầu khởi kiện của {plaintiff} về {dispute}"[:200],        # yêu cầu nguyên đơn
-        f"ý kiến trình bày của {defendant} về {dispute}"[:200],         # ý kiến bị đơn
-        f"lời khai, chứng cứ, tài liệu liên quan đến {dispute}"[:200],  # chứng cứ
-        f"nhận định của Hội đồng xét xử về {dispute}"[:200],            # phần nhận định tòa
-        f"quyết định của Tòa án về {dispute}"[:200],                    # phần quyết định
+    """Sinh các câu truy vấn súc tích, bao quát toàn bộ diễn biến và phán quyết vụ án (tối đa 3 calls để không bị phạt E_i)."""
+    q_clean = case_query[:250].strip()
+    return [
+        q_clean,                                                        # Nguyên văn truy vấn
+        f"lời khai chứng cứ nguyên đơn bị đơn tranh chấp {q_clean[:120]}",  # Diễn biến & chứng cứ
+        f"nhận định của Hội đồng xét xử và quyết định của Tòa án {q_clean[:120]}",  # Phán quyết & nhận định
     ]
-    return queries[:MAX_CALLS_PER_CASE]
 
 
 def get_case_evidence(case_id: str, query: str, api_key: str | None = None, multi_query: bool = True) -> list[dict | str]:
     """
     Retrieve case evidence results (containing chunk_id, text, score) for a given case using disk cache.
-    Nếu chưa có trong cache, sử dụng chiến lược truy vấn đa chiều + Early Stop để thu thập đủ góc nhìn vụ án.
+    Thu thập toàn bộ các chunk có liên quan từ API mà không phức tạp hóa hay cắt xén kết quả.
     """
     cid = str(case_id).strip()
     cache = _load_cache()
@@ -66,10 +53,8 @@ def get_case_evidence(case_id: str, query: str, api_key: str | None = None, mult
     # 1. Check local disk cache first (0 penalty, 0 delay)
     if cid in cache:
         cached = cache[cid]
-        # Nếu cache lưu format dict mới {"multi_query": True, "results": [...]}
         if isinstance(cached, dict) and "results" in cached:
             return cached["results"]
-        # Nếu cache lưu list dict có text từ trước, dùng luôn
         if isinstance(cached, list) and cached and isinstance(cached[0], dict) and "text" in cached[0]:
             return cached
 
@@ -79,21 +64,19 @@ def get_case_evidence(case_id: str, query: str, api_key: str | None = None, mult
         cached = cache.get(cid, [])
         return cached.get("results", []) if isinstance(cached, dict) else cached
 
-    # 3. Call API với chiến lược đa chiều (multi-query) + Early Stop
+    # 3. Call API với tối đa 3 câu truy vấn cô đọng (đảm bảo c_i <= 2*n_i, không bị phạt hiệu năng)
     headers = {
         "X-API-Key": token.strip(),
         "Content-Type": "application/json",
     }
 
-    queries = build_diverse_queries(query) if multi_query else [query[:200]]
+    queries = build_diverse_queries(query) if multi_query else [query[:250]]
     evidence_segments = []
     seen_chunk_ids = set()
-    low_score_streak = 0
 
     for i, q in enumerate(queries):
         payload = {"query": q, "case_id": cid}
         max_retries = 3
-        success_chunk = False
 
         for attempt in range(max_retries):
             try:
@@ -110,34 +93,23 @@ def get_case_evidence(case_id: str, query: str, api_key: str | None = None, mult
                 resp.raise_for_status()
                 data = resp.json()
                 results = data.get("results", [])
-                if results and isinstance(results[0], dict):
-                    top_res = results[0]
-                    chunk_id = top_res.get("chunk_id")
-                    score = top_res.get("score", 0.0) or 0.0
+                
+                # QUAN TRỌNG: Lấy TOÀN BỘ các chunk hợp lệ do API trả về (thay vì chỉ lấy mỗi results[0] như code cũ)
+                for res in results:
+                    if isinstance(res, dict):
+                        chunk_id = res.get("chunk_id")
+                        score = res.get("score", 0.0) or 0.0
+                        if chunk_id and chunk_id not in seen_chunk_ids and score >= MIN_SCORE:
+                            evidence_segments.append(res)
+                            seen_chunk_ids.add(chunk_id)
 
-                    if chunk_id and chunk_id not in seen_chunk_ids:
-                        evidence_segments.append(top_res)
-                        seen_chunk_ids.add(chunk_id)
-                        low_score_streak = 0
-                    else:
-                        low_score_streak += 1
-
-                    if score < MIN_SCORE:
-                        low_score_streak += 1
-                else:
-                    low_score_streak += 1
-
-                success_chunk = True
                 if i < len(queries) - 1:
-                    time.sleep(5.1)
+                    time.sleep(4.5)
                 break
 
             except Exception as e:
                 print(f"  [WARN] Lỗi gọi API Retrieval cho {cid} query {i+1} (lần {attempt+1}/{max_retries}): {e}")
-                time.sleep(4)
-
-        if low_score_streak >= 2 and i >= 2:
-            break
+                time.sleep(3)
 
     # Cache lại toàn bộ object results vào disk
     cache[cid] = evidence_segments if not multi_query else {"multi_query": True, "results": evidence_segments}
