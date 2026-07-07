@@ -1,5 +1,5 @@
 """
-query.py – Interactive CLI to query the law RAG system.
+query.py – Interactive command-line interface to query the legal RAG system.
 
 Usage:
     python -m rag_retrieval.query "Điều kiện để thành lập tổ chức tín dụng là gì?"
@@ -24,27 +24,34 @@ _project_root = Path(__file__).resolve().parent.parent
 if str(_project_root) not in sys.path:
     sys.path.append(str(_project_root))
 
-from configs.config import NUM_RESULTS
+from configs.config import DEFAULT_ALPHA, NUM_RESULTS
 from rag_retrieval.hybrid_retriever import HybridRetriever
 from rag_retrieval.rag import answer_query
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Query the law RAG system.")
+    parser = argparse.ArgumentParser(description="Query the legal RAG system.")
     parser.add_argument("query", nargs="?", default=None, help="Question to ask.")
     parser.add_argument("--k",     type=int,   default=NUM_RESULTS)
-    parser.add_argument("--alpha", type=float, default=0.5,
-                        help="Weight for semantic search (0=BM25 only, 1=FAISS only).")
-    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=DEFAULT_ALPHA,
+        help="Weight for semantic search (0=BM25 only, 1=FAISS only).",
+    )
+    parser.add_argument("--quiet", action="store_true", help="Suppress source printing.")
     args = parser.parse_args()
 
-    # Load indexes (builds from parquet if not cached)
+    # Load indexes from disk
     retriever = HybridRetriever.from_disk()
 
     # Single query mode
     if args.query:
         result = answer_query(
-            args.query, retriever, k=args.k, alpha=args.alpha,
+            args.query,
+            retriever,
+            k=args.k,
+            alpha=args.alpha,
             verbose=not args.quiet,
         )
         print("\n" + "=" * 60)
@@ -52,8 +59,8 @@ def main() -> None:
         print(result["answer"])
         return
 
-    # Interactive loop
-    print("\nLaw RAG (Hybrid FAISS+BM25) – type your question (or 'quit' to exit)\n")
+    # Interactive loop mode
+    print("\nLegal RAG (Hybrid FAISS + BM25) – Type your question (or 'quit' to exit)\n")
     while True:
         try:
             query = input("❯ ").strip()
@@ -62,7 +69,10 @@ def main() -> None:
         if not query or query.lower() in {"quit", "exit", "q"}:
             break
         result = answer_query(
-            query, retriever, k=args.k, alpha=args.alpha,
+            query,
+            retriever,
+            k=args.k,
+            alpha=args.alpha,
             verbose=not args.quiet,
         )
         print("\n" + "=" * 60)
