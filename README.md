@@ -17,7 +17,7 @@ The pipeline integrates **Hybrid Search** (combining **FAISS** semantic vector s
 3. **Online Retrieval & Prediction (`rag_retrieval/`)**:
    - **Hybrid Retriever**: Merges FAISS and BM25 results using Reciprocal Rank Fusion (RRF) with adjustable semantic weight (`alpha`).
    - **Evidence Retrieval**: Retrieves case evidence chunks from local disk cache (`data/cache/case_evidence_cache.json`) with zero latency penalty, applying BM25 ranking and structural verdict keyword bonuses.
-   - **Verdict Prediction Pipeline**: Analyzes plaintiff claims, evidence, and laws to predict 4-class court verdicts (`A_WIN`, `PARTIAL_A_WIN`, `PARTIAL_B_WIN`, `B_WIN`), backed by deterministic legal keyword rule overrides and robust negation filtering.
+   - **Verdict Prediction Pipeline**: Analyzes plaintiff claims, evidence, and laws to predict 4-class court verdicts (`A_WIN`, `PARTIAL_A_WIN`, `PARTIAL_B_WIN`, `B_WIN`). The pipeline relies 100% on advanced LLM reasoning fueled by multi-query retrieval and hybrid legal search without brittle heuristic overrides.
 
 ---
 
@@ -46,7 +46,7 @@ ALQUAC/                                 ← Root directory
 └── rag_retrieval/                      ← Online RAG, hybrid search & prediction pipeline
     ├── generate_submission.py          ← Automated ALQAC 2026 prediction & submission builder
     ├── prefetch_cache.py               ← Automated pre-fetcher to crawl and cache case evidence
-    ├── rag.py                          ← Main RAG pipeline & interactive query solver
+    ├── rag.py                          ← Main RAG pipeline & interactive query solver (DRY/KISS)
     ├── hybrid_retriever.py             ← Hybrid search combining FAISS + BM25 via RRF
     ├── case_api.py                     ← Cache-only case evidence BM25 retriever
     ├── evidence_api_client.py          ← API client with exponential backoff & rate-limiting
@@ -155,14 +155,14 @@ The pipeline is architected specifically around the competition's evaluation for
 $$\text{FinalScore} = 0.70 \times \text{OutcomeAccuracy} + 0.20 \times \text{PenalizedCaseRecall} + 0.10 \times \text{LawF1micro}$$
 
 1. **Maximized Outcome Accuracy (70% Weight)**:
-   - **Few-Shot Classification Prompt**: The LLM system prompt includes structured Vietnamese legal reasoning examples guiding classification across `A_WIN`, `PARTIAL_A_WIN`, `PARTIAL_B_WIN`, and `B_WIN`.
-   - **Deterministic Rule Override (`rule_override`)**: Court decisions containing unambiguous verdict phrasing (e.g., *"chấp nhận một phần yêu cầu khởi kiện"*, *"không có căn cứ để chấp nhận"*) bypass LLM inference entirely, guaranteeing 100% precision on explicit rulings.
+   - **Full LLM-Driven Verdict Reasoning**: Employs deep contextual reasoning by providing the LLM with both the legal fact summary (`case_fact`), retrieved court decisions (`case_evidence`), and exact statutory articles (`rel_laws`), completely eliminating brittle heuristic overrides (`rule_override`).
+   - **Few-Shot Classification Prompt**: The LLM system prompt includes structured Vietnamese legal reasoning anchors guiding precise classification across `A_WIN`, `PARTIAL_A_WIN`, `PARTIAL_B_WIN`, and `B_WIN`.
 2. **Maximized Penalized Case Recall (20% Weight) & API Efficiency**:
-   - **Multi-Query Dispute Extraction**: The pipeline analyzes `case_fact` to extract specific plaintiff claims (*"nguyên đơn trình bày"*), defendant counterclaims (*"bị đơn trình bày"*), and court reasoning (*"tòa án nhận định"*), generating up to 4 targeted search queries per case.
-   - **Zero Penalty Guarantee**: By capping queries at $\le 4$ per case, total API calls remain within the safe threshold ($c_i \le 2n_i$), ensuring the API efficiency factor $E_i = 1.0$ (no penalty).
+   - **Multi-Query Dispute Extraction**: The LLM analyzes the case details to formulate 3 investigative queries specifically anchoring on `"NHẬN ĐỊNH CỦA TÒA ÁN"` and `"QUYẾT ĐỊNH"`, plus the original query ($1+3=4$ queries total per case).
+   - **Zero Penalty Guarantee**: By strictly capping queries at $\le 4$ per case, total API calls remain within the safe threshold ($c_i \le 2n_i$), ensuring the API efficiency factor $E_i = 1.0$ (no penalty).
    - **Rate Limit Compliance**: Enforces a strict `5.2s` interval (`RETRY_DELAY_NORMAL`) between API requests and exponential backoff (`6.0s+` for `429 Too Many Requests`) to prevent server blocks.
 3. **Maximized Micro Law F1 (10% Weight)**:
-   - **Extended Fact Context Window**: Increases `MAX_FACT_LEN_FOR_SEARCH` to `2500` characters, ensuring the Hybrid Retriever evaluates the full legal substance of disputes rather than superficial administrative headers.
+   - **Extended Fact Context Window**: Increases `MAX_FACT_LEN_FOR_SEARCH` to `2500` characters and integrates multi-query investigative phrases directly into statutory retrieval.
    - **Reciprocal Rank Fusion (RRF)**: Combines dense vector similarity (`BAAI/bge-m3`) with lexical keyword matching (`BM25Okapi`) to retrieve precise Civil and Commercial Code article IDs (`law_id`, `aid`).
 
 ---
@@ -187,5 +187,5 @@ All key parameters can be adjusted directly in **`configs/config.py`** or overri
 - **Hybrid Weighting (`DEFAULT_ALPHA`)**: Controls the balance between semantic FAISS search and lexical BM25 search during Reciprocal Rank Fusion (`0.5` = balanced, `0.7` = favor semantics, `0.3` = favor exact keywords).
 - **Chunking Strategy (`MAX_CHUNK_TOKENS`, `CHUNK_STRIDE`)**: Configures window size and overlap for splitting long legal statutes into context-preserving segments.
 - **Verdict Keyword Boosting (`VERDICT_KEYWORDS`, `VERDICT_KEYWORD_BOOST`)**: Fine-tunes BM25 score multipliers for evidence chunks containing critical judgement headers (`"tuyên xử"`, `"quyết định"`, `"án phí"`).
-- **Rule Overrides (`RULE_KEYWORDS_...`)**: Tailors deterministic keyword rules and negation filters (`"không "`, `"chưa "`, `"để "`, `"cứ "`) for court decision classification.
 - **Rate Limit Delays (`RETRY_DELAY_NORMAL`, `RETRY_DELAY_429`)**: Adjusts sleep intervals between API requests to comply with competition server limits.
+

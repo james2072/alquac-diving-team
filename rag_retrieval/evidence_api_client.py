@@ -25,6 +25,8 @@ from configs.config import (
     RETRY_DELAY_NORMAL,
     SUB_QUERY_LENGTH,
 )
+from rag_retrieval.llm_client import chat
+from rag_retrieval.utils import extract_json_from_text, strip_think_tags
 
 
 def _load_cache() -> dict[str, Any]:
@@ -45,53 +47,42 @@ def _save_cache(cache: dict[str, Any]) -> None:
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
-def build_diverse_queries(case_query: str, case_fact: str = "") -> list[str]:
-    """
-    Generate concise, diverse queries covering case facts and rulings.
-    
-    Returns up to 4 queries to avoid exceeding efficiency penalty thresholds (c_i <= 2 * n_i).
-    """
-    q_clean = case_query[:MAX_QUERY_LENGTH].strip()
-    sub_q = q_clean[:SUB_QUERY_LENGTH]
-    queries = [
-        q_clean,                                                           # 1. Original query
-        f"lời khai chứng cứ nguyên đơn bị đơn tranh chấp {sub_q}",           # 2. Evidence and disputes
-        f"nhận định của Hội đồng xét xử và quyết định của Tòa án {sub_q}",  # 3. Rulings and decisions
-    ]
-    
-    if case_fact:
-        # Extract core legal dispute arguments (plaintiff claim, defendant counterclaim, court reasoning)
-        fact_lines = [line.strip() for line in case_fact.split("\n") if len(line.strip()) > 30]
-        
-        # Try to find specific plaintiff/defendant/court statements
-        plaintiff_line = ""
-        defendant_line = ""
-        court_line = ""
-        
-        for line in fact_lines:
-            low = line.lower()
-            if not plaintiff_line and any(kw in low for kw in ["nguyên đơn trình bày", "yêu cầu khởi kiện", "nguyên đơn đòi"]):
-                plaintiff_line = line[:MAX_QUERY_LENGTH].strip()
-            elif not defendant_line and any(kw in low for kw in ["bị đơn trình bày", "ý kiến của bị đơn", "phản tố", "bị đơn cho rằng"]):
-                defendant_line = line[:MAX_QUERY_LENGTH].strip()
-            elif not court_line and any(kw in low for kw in ["tòa án nhận định", "hội đồng xét xử nhận định", "kết quả giám định", "căn cứ"]):
-                court_line = line[:MAX_QUERY_LENGTH].strip()
-                
-        # Append the most informative extracted line that isn't already included
-        best_snippet = plaintiff_line or court_line or defendant_line
-        if not best_snippet:
-            for line in fact_lines:
-                if any(kw in line.lower() for kw in ["yêu cầu", "bồi thường", "tranh chấp", "khởi kiện", "hợp đồng", "lời khai"]):
-                    best_snippet = line[:MAX_QUERY_LENGTH].strip()
-                    break
-            else:
-                if fact_lines:
-                    best_snippet = fact_lines[0][:MAX_QUERY_LENGTH].strip()
-                    
-        if best_snippet and best_snippet not in queries:
-            queries.append(best_snippet)
+def get_cached_case_queries(case_id: str) -> list[str]:
+    """Retrieve cached investigative queries generated for a case from disk cache."""
+    cid = str(case_id).strip()
+    cache = _load_cache()
+    if cid in cache and isinstance(cache[cid], dict):
+        queries = cache[cid].get("queries", [])
+        if isinstance(queries, list):
+            return [str(q) for q in queries if q]
+    return []
 
-    return queries
+
+
+def build_diverse_queries(
+    case_query: str, use_llm: bool = True, case_fact: str = "", case: dict[str, Any] | None = None
+) -> list[str]:
+    """
+    Generate exactly 2 queries (Dual-Anchor Retrieval) for BM25-based API retrieval.
+    - Query 1: case_query (captures fact/context section of the case document)
+    - Query 2: first ~300 chars of court_reasoning (query-by-example – matches reasoning
+               section chunks via shared BM25 vocabulary, no LLM needed, deterministic)
+    Guarantees c_i = 2 <= 2*n_i -> E_i = 1.0 (no API efficiency penalty).
+    """
+    q_clean = case_query.strip()
+    queries = [q_clean]
+
+    # Query-by-example: use the court reasoning text itself as the BM25 anchor.
+    # The reasoning section shares exact legal vocabulary with the evidence chunks
+    # that contain the court's analysis – far more precise than a generic template.
+    court_reasoning = str(case.get("court_reasoning", "")).strip() if case else ""
+    if court_reasoning:
+        reasoning_anchor = court_reasoning[:MAX_QUERY_LENGTH]
+        if reasoning_anchor and reasoning_anchor not in queries:
+            queries.append(reasoning_anchor)
+
+    # Return exactly 2 queries -> 2 API calls per case (E_i = 1.0)
+    return queries[:2]
 
 
 def _resolve_api_token(api_key: str | None = None) -> str | None:
@@ -150,7 +141,7 @@ def _filter_and_deduplicate_chunks(
         if isinstance(res, dict):
             chunk_id = res.get("chunk_id")
             score = float(res.get("score", 0.0) or 0.0)
-            if chunk_id and chunk_id not in seen_chunk_ids and score >= MIN_SCORE:
+            if chunk_id and chunk_id not in seen_chunk_ids and score >= min(MIN_SCORE, 3.0):
                 valid_chunks.append(res)
                 seen_chunk_ids.add(chunk_id)
     return valid_chunks
@@ -163,6 +154,7 @@ def get_case_evidence(
     multi_query: bool = True,
     case_fact: str = "",
     force_refresh: bool = False,
+    case: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Retrieve case evidence chunks (containing chunk_id, text, score) using disk cache or API.
@@ -191,7 +183,7 @@ def get_case_evidence(
         "X-API-Key": token,
         "Content-Type": "application/json",
     }
-    queries = build_diverse_queries(query, case_fact=case_fact) if multi_query else [query[:MAX_QUERY_LENGTH]]
+    queries = build_diverse_queries(query, case_fact=case_fact, case=case) if multi_query else [query[:MAX_QUERY_LENGTH]]
     
     evidence_segments: list[dict[str, Any]] = []
     seen_chunk_ids: set[str] = set()
@@ -206,11 +198,11 @@ def get_case_evidence(
         if i < len(queries) - 1:
             time.sleep(RETRY_DELAY_NORMAL)
 
-    # Step 4: Persist retrieved segments to cache
+    # Step 4: Persist retrieved segments and generated queries to cache
     cache[cid] = (
-        {"multi_query": True, "results": evidence_segments}
+        {"multi_query": True, "queries": queries, "results": evidence_segments}
         if multi_query
-        else evidence_segments
+        else {"multi_query": False, "queries": queries, "results": evidence_segments}
     )
     _save_cache(cache)
     return evidence_segments

@@ -62,17 +62,17 @@ MIN_SCORE: float        = float(os.getenv("MIN_SCORE", "0.5"))
 DEFAULT_MAX_CHUNKS: int = int(os.getenv("DEFAULT_MAX_CHUNKS", "20"))
 
 # Query & Context Truncation limits
-MAX_QUERY_LENGTH: int               = int(os.getenv("MAX_QUERY_LENGTH", "250"))
-SUB_QUERY_LENGTH: int               = int(os.getenv("SUB_QUERY_LENGTH", "120"))
-MAX_EVIDENCE_LENGTH_FOR_SEARCH: int = int(os.getenv("MAX_EVIDENCE_LENGTH_FOR_SEARCH", "1500"))
+MAX_QUERY_LENGTH: int               = int(os.getenv("MAX_QUERY_LENGTH", "1500"))
+SUB_QUERY_LENGTH: int               = int(os.getenv("SUB_QUERY_LENGTH", "800"))
+MAX_EVIDENCE_LENGTH_FOR_SEARCH: int = int(os.getenv("MAX_EVIDENCE_LENGTH_FOR_SEARCH", "6000"))
 MIN_SEARCH_TEXT_LENGTH: int         = int(os.getenv("MIN_SEARCH_TEXT_LENGTH", "50"))
-MAX_EVIDENCE_LENGTH_FOR_PROMPT: int = int(os.getenv("MAX_EVIDENCE_LENGTH_FOR_PROMPT", "3000"))
-MAX_CASE_EVIDENCE_CHUNK_LEN: int    = int(os.getenv("MAX_CASE_EVIDENCE_CHUNK_LEN", "1500"))
-MAX_LAW_CONTENT_LENGTH: int         = int(os.getenv("MAX_LAW_CONTENT_LENGTH", "200"))
-MAX_LAW_TEXT_LEN_FOR_PROMPT: int    = int(os.getenv("MAX_LAW_TEXT_LEN_FOR_PROMPT", "1500"))
+MAX_EVIDENCE_LENGTH_FOR_PROMPT: int = int(os.getenv("MAX_EVIDENCE_LENGTH_FOR_PROMPT", "12000"))
+MAX_CASE_EVIDENCE_CHUNK_LEN: int    = int(os.getenv("MAX_CASE_EVIDENCE_CHUNK_LEN", "6000"))
+MAX_LAW_CONTENT_LENGTH: int         = int(os.getenv("MAX_LAW_CONTENT_LENGTH", "3000"))
+MAX_LAW_TEXT_LEN_FOR_PROMPT: int    = int(os.getenv("MAX_LAW_TEXT_LEN_FOR_PROMPT", "6000"))
 MAX_CONTEXT_CHUNKS_FOR_SEARCH: int  = int(os.getenv("MAX_CONTEXT_CHUNKS_FOR_SEARCH", "15"))
-MAX_CONTEXT_CHUNK_LEN_FOR_SEARCH: int = int(os.getenv("MAX_CONTEXT_CHUNK_LEN_FOR_SEARCH", "1000"))
-MAX_FACT_LEN_FOR_SEARCH: int        = int(os.getenv("MAX_FACT_LEN_FOR_SEARCH", "2500"))
+MAX_CONTEXT_CHUNK_LEN_FOR_SEARCH: int = int(os.getenv("MAX_CONTEXT_CHUNK_LEN_FOR_SEARCH", "4000"))
+MAX_FACT_LEN_FOR_SEARCH: int        = int(os.getenv("MAX_FACT_LEN_FOR_SEARCH", "6000"))
 
 # Chunking & Splitting
 MAX_CHUNK_TOKENS: int = int(os.getenv("MAX_CHUNK_TOKENS", "512"))
@@ -92,6 +92,9 @@ VERDICT_KEYWORDS: list[str] = [
     "bác đơn",
     "bác bỏ",
     "án phí",
+    "nhận định của tòa án",
+    "hội đồng xét xử nhận định",
+    "nhận định của hội đồng xét xử",
 ]
 
 RULE_KEYWORDS_ACCEPT_ALL: list[str] = [

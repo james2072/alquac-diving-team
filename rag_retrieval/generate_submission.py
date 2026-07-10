@@ -43,8 +43,10 @@ from configs.config import (
     PROJECT_ROOT,
     SUBMISSION_FILE,
     TEST_FILE,
+    VERDICT_KEYWORD_BOOST,
+    VERDICT_KEYWORDS,
 )
-from rag_retrieval.evidence_api_client import get_case_evidence
+from rag_retrieval.evidence_api_client import get_cached_case_queries, get_case_evidence
 from rag_retrieval.hybrid_retriever import HybridRetriever
 from rag_retrieval.llm_client import chat
 from rag_retrieval.utils import extract_json_from_text, rule_override, strip_think_tags
@@ -53,74 +55,185 @@ VALID_LABELS = {"A_WIN", "PARTIAL_A_WIN", "PARTIAL_B_WIN", "B_WIN"}
 
 # Note: The system prompt remains in Vietnamese to instruct the LLM correctly 
 # for Vietnamese legal reasoning.
-SYSTEM_PROMPT = """Bạn là một Chuyên gia Pháp lý và Thẩm phán Tối cao tại Việt Nam.
-Nhiệm vụ của bạn là phân tích thông tin vụ án (Yêu cầu khởi kiện), các bằng chứng thu thập được, và các điều luật liên quan để đưa ra phán quyết chính xác nhất.
+SYSTEM_PROMPT = """Bạn là Thẩm phán và Chuyên gia Pháp lý Tối cao tại Việt Nam.
+Nhiệm vụ của bạn là phân tích toàn diện thông tin yêu cầu khởi kiện (THÔNG TIN VỤ ÁN), diễn biến tình tiết (TÌNH TIẾT VỤ ÁN CHI TIẾT), chứng cứ bổ sung (BẰNG CHỨNG THU THẬP ĐƯỢC) và quy định pháp luật (ĐIỀU LUẬT LIÊN QUAN) để ra phán quyết chính xác tuyệt đối.
 
-PHÂN LOẠI PHÁN QUYẾT (bắt buộc chọn 1 trong 4 nhãn sau):
-- A_WIN: Tòa chấp nhận TOÀN BỘ yêu cầu của nguyên đơn.
-- PARTIAL_A_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu của nguyên đơn, phần chấp nhận > 50%.
-- PARTIAL_B_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu của nguyên đơn, nhưng phần chấp nhận <= 50%.
-- B_WIN: Tòa BÁC TOÀN BỘ yêu cầu của nguyên đơn.
+PHÂN LOẠI PHÁN QUYẾT (bắt buộc chọn đúng 1 trong 4 nhãn sau):
+- A_WIN: Tòa chấp nhận TOÀN BỘ yêu cầu khởi kiện CHÍNH của nguyên đơn (phần Tòa xét trên thực tế). Lưu ý: nếu nguyên đơn TỰ RÚT một số yêu cầu phụ trước khi xét xử, những phần rút đó KHÔNG được tính vào tỷ lệ bị bác — chỉ tính những phần Tòa BÁC sau khi xem xét.
+- PARTIAL_A_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu của nguyên đơn (phần Tòa bác ≠ nguyên đơn tự rút), với tỷ lệ hoặc giá trị được chấp nhận > 50% tổng yêu cầu Tòa xem xét.
+- PARTIAL_B_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu của nguyên đơn, nhưng tỷ lệ hoặc giá trị được chấp nhận <= 50% tổng yêu cầu Tòa xem xét.
+- B_WIN: Tòa BÁC TOÀN BỘ (0%) yêu cầu khởi kiện của nguyên đơn (hoặc không có căn cứ chấp nhận).
 
-NGUYÊN TẮC SUY LUẬN BẮT BUỘC:
-1. TUYỆT ĐỐI CHỈ suy luận dựa trên các bằng chứng tình tiết (Case Evidence) và quy định pháp luật (Law Evidence) được cung cấp trong prompt. Không được tự ý suy diễn hay giả định thêm chi tiết không có trong dữ liệu.
-2. CHỌN LỌC BẰNG CHỨNG (PICK): Bạn phải chọn ra chính xác từ danh sách chứng cứ (`chunk_id`) và điều luật (`law_id`, `aid`) đã cung cấp những đoạn nào thực sự được bạn dùng làm căn cứ quyết định phán quyết để nộp bài.
+NGUYÊN TẮC SUY LUẬN & ĐỊNH LƯỢNG BẮT BUỘC:
+1. PHÂN BIỆT TỰ RÚT VÀ BỊ BÁC: Khi nguyên đơn tự rút yêu cầu tại phiên tòa (đình chỉ xét xử một phần), phần đó KHÔNG được tính là Tòa bác. Chỉ xét tỷ lệ trên phần Tòa thực sự giải quyết bằng phán quyết nội dung.
+2. PHÂN BIỆT "GHI NHẬN THỎA THUẬN" VÀ "CHẤP NHẬN YÊU CẦU": Khi bản án "Ghi nhận sự tự nguyện thỏa thuận...", đây là thỏa thuận ngoài tòa, KHÔNG phải Tòa chấp nhận yêu cầu khởi kiện. Nếu Tòa bác phần còn lại -> B_WIN. Nếu toàn bộ vụ án được giải quyết bằng thỏa thuận (hòa giải thành) mà Tòa không có phán quyết chấp nhận/bác nội dung -> Trả về nhãn B_WIN.
+3. PHÂN BIỆT "CHẤP NHẬN" THỦ TỤC VÀ NỘI DUNG: Việc Tòa "chấp nhận" [rút yêu cầu / đơn vắng mặt / thẩm quyền...] là thủ tục. Chỉ đánh giá dựa trên từ khóa "chấp nhận / bác YÊU CẦU KHỞI KIỆN" hoặc "chấp nhận / bác YÊU CẦU của nguyên đơn".
+4. ĐỘC LẬP VỚI YÊU CẦU PHẢN TỐ & BÙ TRỪ NGHĨA VỤ: Phân tích CHỈ dựa trên kết quả giải quyết "Yêu cầu khởi kiện của NGUYÊN ĐƠN". Bỏ qua hoàn toàn việc Tòa chấp nhận hay bác "Yêu cầu phản tố của Bị đơn" hoặc "Yêu cầu độc lập của Người liên quan". CHÚ Ý: Nếu Nguyên đơn được Tòa chấp nhận 100% số tiền đòi, nhưng bị Tòa "cấn trừ/bù trừ" vào nợ của Bị đơn (do phản tố) khiến số tiền thực nhận cuối cùng trên bản án ít hơn, thì nhãn của Nguyên đơn VẪN LÀ A_WIN.
+5. ĐỊNH LƯỢNG TOÁN HỌC (ĐỐI VỚI YÊU CẦU TÀI SẢN): Tính tỷ lệ chấp nhận = (Giá trị Tòa chấp nhận) / (Tổng giá trị Nguyên đơn đòi mà Tòa xét). Chấp nhận > 50% -> PARTIAL_A_WIN; <= 50% -> PARTIAL_B_WIN. LƯU Ý QUAN TRỌNG: Nếu Tòa chấp nhận TIỀN GỐC đầy đủ nhưng tính tiền lãi THẤP HƠN yêu cầu, đây là PARTIAL. Phải so sánh tổng số tiền Tòa phán quyết với tổng số tiền nguyên đơn đòi.
+6. ĐỊNH TÍNH (ĐỐI VỚI YÊU CẦU PHI TÀI SẢN): Đối với các yêu cầu không bằng tiền (đòi đất, hủy hợp đồng, xin lỗi công khai, ly hôn...):
+   - A_WIN: Tòa chấp nhận toàn bộ các yêu cầu cốt lõi.
+   - PARTIAL_A_WIN: Tòa chấp nhận yêu cầu quan trọng nhất (VD: Hủy hợp đồng, đòi được đất) nhưng bác các yêu cầu phụ kiện đi kèm.
+   - PARTIAL_B_WIN: Tòa bác yêu cầu cốt lõi, chỉ chấp nhận yêu cầu phụ.
+   - B_WIN: Tòa bác toàn bộ các yêu cầu phi tài sản.
+7. NHẬN DIỆN PARTIAL ẨN (IMPLICIT PARTIAL): Khi Tòa viết "Chấp nhận yêu cầu khởi kiện" nhưng số tiền phán quyết (hoặc diện tích đất cấp) THẤP HƠN yêu cầu ban đầu -> Đây là PARTIAL.
+8. CHỌN LỌC BẰNG CHỨNG CHUẨN XÁC (`selected_case_evidence` và `selected_law_evidence`):
+   - `selected_case_evidence`: BẮT BUỘC liệt kê chính xác các mã `chunk_id` có chứa phán quyết, nhận định của Tòa án làm căn cứ cho nhãn bạn chọn.
+   - `selected_law_evidence`: BẮT BUỘC liệt kê chính xác các cặp `{"law_id": "...", "aid": ...}` được Tòa áp dụng.
 
-VÍ DỤ SUY LUẬN (FEW-SHOT EXAMPLES):
-- Ví dụ 1: Nếu chứng cứ cho thấy "Tòa án quyết định không có căn cứ để chấp nhận yêu cầu của nguyên đơn", hãy chọn prediction là "B_WIN".
-- Ví dụ 2: Nếu chứng cứ cho thấy "Chấp nhận yêu cầu khởi kiện, buộc bị đơn trả đủ số tiền nguyên đơn đòi", hãy chọn prediction là "A_WIN".
-- Ví dụ 3: Nếu chứng cứ cho thấy "Chấp nhận một phần yêu cầu khởi kiện, buộc bị đơn bồi thường 70 triệu trên tổng số 100 triệu nguyên đơn yêu cầu (> 50%)", hãy chọn prediction là "PARTIAL_A_WIN".
+VÍ DỤ SUY LUẬN MẪU (COMPREHENSIVE FEW-SHOT EXAMPLES):
 
-Bạn PHẢI trả lời CHỈ DUY NHẤT một object JSON hợp lệ theo đúng định dạng (không giải thích ngoài JSON):
+[VÍ DỤ 1 - A_WIN: CHẤP NHẬN TOÀN BỘ]
+- Đầu vào: Nguyên đơn đòi bị đơn trả số tiền vay 500.000.000 đồng và tiền lãi suất 50.000.000 đồng theo Hợp đồng vay ngày 10/01/2020.
+- Bằng chứng: `[case_101_chunk_3]` Tòa án nhận định hợp đồng vay là hợp pháp. Bị đơn vi phạm nghĩa vụ thanh toán theo thỏa thuận. Quyết định: Chấp nhận toàn bộ yêu cầu khởi kiện của nguyên đơn, buộc bị đơn trả cho nguyên đơn đủ 550.000.000 đồng.
+- Điều luật: `- Luật 91/2015/QH13 Điều 466: Nghĩa vụ trả nợ của bên vay...`
+- Đầu ra JSON:
+{
+  "prediction": "A_WIN",
+  "reasoning": "Tòa án xác định hợp đồng hợp pháp và bị đơn vi phạm nghĩa vụ thanh toán theo Điều 466 BLDS 2015. Tòa chấp nhận toàn bộ 100% yêu cầu trả nợ gốc và lãi (550 triệu đồng).",
+  "selected_case_evidence": ["case_101_chunk_3"],
+  "selected_law_evidence": [{"law_id": "91/2015/QH13", "aid": 466}]
+}
+
+[VÍ DỤ 2 - PARTIAL_A_WIN: CHẤP NHẬN MỘT PHẦN > 50%]
+- Đầu vào: Nguyên đơn khởi kiện đòi bồi thường thiệt hại do tai nạn tổng số tiền 100.000.000 đồng (gồm chi phí điều trị viện phí 70.000.000 đồng và bồi thường tổn thất tinh thần 30.000.000 đồng).
+- Bằng chứng: `[case_202_chunk_2]` Tòa xét thấy bị đơn có lỗi gây ra tai nạn nên phải chịu trách nhiệm bồi thường chi phí điều trị y tế thực tế là 70.000.000 đồng. Đối với khoản tổn thất tinh thần 30.000.000 đồng không có cơ sở chứng minh nên không được chấp nhận. Quyết định: Chấp nhận một phần yêu cầu khởi kiện của nguyên đơn, buộc bị đơn bồi thường 70.000.000 đồng.
+- Điều luật: `- Luật 91/2015/QH13 Điều 584: Căn cứ phát sinh trách nhiệm bồi thường...`, `- Luật 91/2015/QH13 Điều 590: Thiệt hại do sức khỏe bị xâm phạm...`
+- Đầu ra JSON:
+{
+  "prediction": "PARTIAL_A_WIN",
+  "reasoning": "Tòa chấp nhận phần bồi thường viện phí hợp lệ là 70.000.000 đồng trên tổng yêu cầu 100.000.000 đồng (đạt tỷ lệ 70% > 50%), bác phần yêu cầu tổn thất tinh thần. Căn cứ theo Điều 584 và 590 BLDS 2015.",
+  "selected_case_evidence": ["case_202_chunk_2"],
+  "selected_law_evidence": [{"law_id": "91/2015/QH13", "aid": 584}, {"law_id": "91/2015/QH13", "aid": 590}]
+}
+
+[VÍ DỤ 3 - PARTIAL_B_WIN: CHẤP NHẬN MỘT PHẦN <= 50%]
+- Đầu vào: Nguyên đơn yêu cầu buộc bị đơn thanh toán tiền phạt vi phạm hợp đồng 200.000.000 đồng và bồi thường thiệt hại kinh doanh 300.000.000 đồng (tổng yêu cầu là 500.000.000 đồng).
+- Bằng chứng: `[case_303_chunk_1]` Tòa nhận định thỏa thuận phạt vi phạm 150.000.000 đồng là đúng quy định. Tuy nhiên nguyên đơn không cung cấp được chứng cứ chứng minh thiệt hại thực tế 300.000.000 đồng nên bác yêu cầu này. Quyết định: Chấp nhận một phần yêu cầu khởi kiện, buộc bị đơn thanh toán tiền phạt vi phạm 150.000.000 đồng.
+- Điều luật: `- Luật 36/2005/QH11 Điều 300: Phạt vi phạm...`
+- Đầu ra JSON:
+{
+  "prediction": "PARTIAL_B_WIN",
+  "reasoning": "Tòa chấp nhận yêu cầu phạt vi phạm 150.000.000 đồng trên tổng số 500.000.000 đồng nguyên đơn đòi (đạt tỷ lệ 30% <= 50%), bác phần bồi thường thiệt hại do thiếu chứng cứ theo Điều 300 Luật Thương mại 2005.",
+  "selected_case_evidence": ["case_303_chunk_1"],
+  "selected_law_evidence": [{"law_id": "36/2005/QH11", "aid": 300}]
+}
+
+[VÍ DỤ 4 - B_WIN: BÁC TOÀN BỘ YÊU CẦU / YÊU CẦU PHI TÀI SẢN]
+- Đầu vào: Nguyên đơn yêu cầu công nhận di chúc viết tay ngày 12/05/2018 là hợp pháp và chia di sản thừa kế theo di chúc.
+- Bằng chứng: `[case_404_chunk_5]` Tòa án giám định và kết luận di chúc viết tay không tuân thủ quy định pháp luật, người lập di chúc khi đó mất năng lực hành vi dân sự. Quyết định: Bác toàn bộ yêu cầu khởi kiện của nguyên đơn.
+- Điều luật: `- Luật 91/2015/QH13 Điều 630: Điều kiện hợp pháp của di chúc...`
+- Đầu ra JSON:
+{
+  "prediction": "B_WIN",
+  "reasoning": "Di chúc viết tay vi phạm điều kiện có hiệu lực pháp luật theo Điều 630 BLDS 2015. Tòa bác toàn bộ 100% yêu cầu cốt lõi (phi tài sản) của nguyên đơn.",
+  "selected_case_evidence": ["case_404_chunk_5"],
+  "selected_law_evidence": [{"law_id": "91/2015/QH13", "aid": 630}]
+}
+
+[VÍ DỤ 5 - A_WIN: ĐỘC LẬP VỚI PHẢN TỐ & BÙ TRỪ NGHĨA VỤ]
+- Đầu vào: Nguyên đơn yêu cầu bị đơn trả tiền hàng 1.000.000.000 đồng. Bị đơn phản tố yêu cầu nguyên đơn bồi thường vi phạm hợp đồng 300.000.000 đồng.
+- Bằng chứng: `[case_505_chunk_4]` Tòa xét thấy yêu cầu trả tiền hàng 1.000.000.000 đồng của nguyên đơn là có cơ sở. Yêu cầu phản tố 300.000.000 đồng của bị đơn cũng có cơ sở. Quyết định: Chấp nhận yêu cầu của nguyên đơn (1 tỷ), chấp nhận yêu cầu phản tố của bị đơn (300 triệu). Đối trừ nghĩa vụ, buộc bị đơn thanh toán cho nguyên đơn 700.000.000 đồng.
+- Điều luật: `- Luật 91/2015/QH13 Điều 378: Bù trừ nghĩa vụ...`
+- Đầu ra JSON:
+{
+  "prediction": "A_WIN",
+  "reasoning": "Tòa án chấp nhận 100% yêu cầu khởi kiện của nguyên đơn (1.000.000.000 đồng). Việc số tiền thực nhận giảm xuống 700.000.000 đồng là do bù trừ nghĩa vụ với yêu cầu phản tố của bị đơn theo Điều 378 BLDS 2015, không phải do Tòa bác yêu cầu của nguyên đơn.",
+  "selected_case_evidence": ["case_505_chunk_4"],
+  "selected_law_evidence": [{"law_id": "91/2015/QH13", "aid": 378}]
+}
+
+Bạn PHẢI trả lời CHỈ DUY NHẤT một object JSON hợp lệ theo đúng định dạng (tuyệt đối không thêm bất kỳ văn bản giải thích nào ngoài JSON):
 {
   "prediction": "A_WIN" | "PARTIAL_A_WIN" | "PARTIAL_B_WIN" | "B_WIN",
-  "reasoning": "Giải thích ngắn gọn căn cứ phán quyết dựa trên chứng cứ và điều luật",
+  "reasoning": "Giải thích ngắn gọn căn cứ phán quyết và định lượng tỷ lệ",
   "selected_case_evidence": ["danh_sách_mã_chunk_id_đã_dùng"],
   "selected_law_evidence": [{"law_id": "mã_luật", "aid": số_điều}]
 }"""
 
-
 def _retrieve_evidence(
-    cid: str, query: str, fact: str, retriever: HybridRetriever, top_k: int, alpha: float
+    case: dict[str, Any], retriever: HybridRetriever, top_k: int, alpha: float
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str, str]:
     """Retrieve both case evidence (API/Cache) and legal text (Hybrid Search)."""
+    cid = str(case.get("case_id", "")).strip()
+    query = str(case.get("case_query", ""))
+    fact = str(case.get("case_fact", ""))
+    a_desc = str(case.get("A_description", ""))
+    b_desc = str(case.get("B_description", ""))
+
     # 1. Retrieve case evidence
-    case_ev_data = get_case_evidence(cid, query, case_fact=fact)
+    case_ev_data = get_case_evidence(cid, query, case_fact=fact, case=case)
     
+    if isinstance(case_ev_data, list):
+        case_ev_data = sorted(
+            [r for r in case_ev_data if isinstance(r, dict) and r.get("text")],
+            key=lambda x: float(x.get("score", 0.0) or 0.0),
+            reverse=True,
+        )
+
     case_ev_str = "\n".join(
-        f"- [{r.get('chunk_id', '')}] {str(r.get('text', ''))[:MAX_CASE_EVIDENCE_CHUNK_LEN]}"
-        for r in case_ev_data if isinstance(r, dict) and r.get("text")
+        f"- [{r.get('chunk_id', '')}] {str(r.get('text', '')).strip()[:MAX_CASE_EVIDENCE_CHUNK_LEN]}"
+        for r in case_ev_data
     )
 
-    # 2. Retrieve laws by combining query, fact, and case evidence context
+    # 2. Retrieve laws by combining query, party descriptions, LLM investigative questions, fact, and retrieved evidence context
     ev_context = " ".join(
-        [str(r.get("text", ""))[:MAX_CONTEXT_CHUNK_LEN_FOR_SEARCH] 
+        [str(r.get("text", '')).strip()[:MAX_CONTEXT_CHUNK_LEN_FOR_SEARCH] 
          for r in case_ev_data if isinstance(r, dict) and r.get("text")][:MAX_CONTEXT_CHUNKS_FOR_SEARCH]
     )
+    cached_queries = get_cached_case_queries(cid)
+    llm_questions_str = "\n".join(cached_queries[1:]) if len(cached_queries) > 1 else ""
+    party_context = f"{a_desc[:300]} {b_desc[:300]}".strip()
     
-    search_query = f"{query}\n{fact[:MAX_FACT_LEN_FOR_SEARCH]}\n{ev_context}"
+    search_query = f"{query}\n{party_context}\n{llm_questions_str}\n{fact[:MAX_FACT_LEN_FOR_SEARCH]}\n{ev_context}"
     rel_laws = retriever.search(search_query, k=top_k, alpha=alpha)
     
     laws_str = "\n".join(
-        f"- Luật {l['law_id']} Điều {l['aid']}: {str(l['text'])[:MAX_LAW_TEXT_LEN_FOR_PROMPT]}..."
+        f"- Luật {l['law_id']} Điều {l['aid']}: {str(l['text']).strip()[:MAX_LAW_TEXT_LEN_FOR_PROMPT]}"
         for l in rel_laws
     )
     
     return case_ev_data, rel_laws, case_ev_str, laws_str
 
 
-def _build_prompt(query: str, case_ev_str: str, laws_str: str) -> str:
-    """Construct the user prompt for the LLM."""
-    return f"""THÔNG TIN VỤ ÁN (Yêu cầu khởi kiện):
+def _build_prompt(case: dict[str, Any], case_ev_str: str, laws_str: str) -> str:
+    """Construct the user prompt for the LLM including full case metadata, party roles, query, and detailed facts."""
+    query = str(case.get("case_query", ""))
+    fact = str(case.get("case_fact", ""))
+    case_type = str(case.get("case_type", "Dân sự"))
+    court_level = str(case.get("court_level", "Sơ thẩm"))
+    a_role = str(case.get("A_role", "Nguyên đơn"))
+    a_desc = str(case.get("A_description", ""))
+    b_role = str(case.get("B_role", "Bị đơn"))
+    b_desc = str(case.get("B_description", ""))
+    court_verdict = str(case.get("court_verdict", "")).strip()
+    court_reasoning = str(case.get("court_reasoning", "")).strip()
+
+    party_info = f"- {a_role} (Bên A - tương ứng nhãn A_WIN): {a_desc if a_desc else '(Không có chi tiết)'}\n- {b_role} (Bên B - tương ứng nhãn B_WIN): {b_desc if b_desc else '(Không có chi tiết)'}"
+
+    verdict_section = ""
+    if court_verdict:
+        verdict_section += f"\nQUYẾT ĐỊNH CỦA TÒA ÁN (Court Verdict):\n{court_verdict[:MAX_CASE_EVIDENCE_CHUNK_LEN]}"
+    if court_reasoning:
+        verdict_section += f"\n\nNHẬN ĐỊNH CỦA HỘI ĐỒNG XÉT XỬ (Court Reasoning):\n{court_reasoning[:MAX_CASE_EVIDENCE_CHUNK_LEN]}"
+
+    return f"""THÔNG TIN TỔNG QUAN VỤ ÁN:
+- Loại vụ án: {case_type} | Cấp xét xử: {court_level}
+{party_info}
+
+TÓM TẮT YÊU CẦU KHỞI KIỆN / TRANH CHẤP:
 {query}
 
-BẰNG CHỨNG THU THẬP ĐƯỢC (Case Evidence):
+TÌNH TIẾT VỤ ÁN CHI TIẾT:
+{fact if fact else "(Không có tình tiết bổ sung)"}
+{verdict_section}
+
+BẰNG CHỨNG THU THẬP ĐƯỢC:
 {case_ev_str if case_ev_str else "(Không có chứng cứ bổ sung)"}
 
 ĐIỀU LUẬT LIÊN QUAN:
 {laws_str if laws_str else "(Không tìm thấy điều luật liên quan)"}
 
-Hãy phân tích, dự đoán kết quả xét xử và chọn ra các bằng chứng/điều luật làm căn cứ, trả về đúng định dạng JSON yêu cầu."""
+Hãy phân tích kỹ QUYẾT ĐỊNH và NHẬN ĐỊNH của Tòa án (nếu có), tư cách các bên, yêu cầu khởi kiện, tình tiết chi tiết và quy định pháp luật để xác định kết quả xét xử. Trả về đúng định dạng JSON yêu cầu."""
 
 
 def _parse_and_validate(
@@ -137,7 +250,10 @@ def _parse_and_validate(
     selected_laws: list[Any] = []
     
     parsed = extract_json_from_text(clean_resp)
-    if parsed:
+    if isinstance(parsed, list) and parsed:
+        parsed = next((item for item in parsed if isinstance(item, dict)), {})
+    
+    if isinstance(parsed, dict) and parsed:
         candidate = str(parsed.get("prediction", "")).strip()
         if candidate in VALID_LABELS:
             pred = candidate
@@ -198,19 +314,13 @@ def predict_case(
         }
 
     case_ev_data, rel_laws, case_ev_str, laws_str = _retrieve_evidence(
-        cid, query, fact, retriever, top_k, alpha
+        case, retriever, top_k, alpha
     )
 
-    user_prompt = _build_prompt(query, case_ev_str, laws_str)
+    user_prompt = _build_prompt(case, case_ev_str, laws_str)
     raw_resp = chat(prompt=user_prompt, system=SYSTEM_PROMPT, temperature=LLM_TEMPERATURE)
     
     res = _parse_and_validate(raw_resp, cid, case_ev_data, rel_laws, retriever.valid_law_aids)
-
-    # Apply deterministic rule override (Outcome Accuracy boost)
-    rule_pred = rule_override(fact)
-    if rule_pred:
-        print(f"  [RuleOverride] Case {cid}: Deterministic rule override applied -> {rule_pred}")
-        res["prediction"] = rule_pred
 
     return res
 

@@ -42,12 +42,16 @@ class CaseAPIClient:
                     chunks: list[dict[str, Any]] = []
                     seen: set[str] = set()
                     if isinstance(queries, dict):
-                        for _, result in queries.items():
-                            if isinstance(result, dict):
-                                chunk_id = result.get("chunk_id")
-                                if chunk_id and chunk_id not in seen:
-                                    chunks.append(result)
-                                    seen.add(chunk_id)
+                        raw_items = queries.get("results", []) if isinstance(queries.get("results"), list) else queries.values()
+                        for res in raw_items:
+                            if isinstance(res, dict) and res.get("chunk_id") and res["chunk_id"] not in seen:
+                                chunks.append(res)
+                                seen.add(res["chunk_id"])
+                    elif isinstance(queries, list):
+                        for res in queries:
+                            if isinstance(res, dict) and res.get("chunk_id") and res["chunk_id"] not in seen:
+                                chunks.append(res)
+                                seen.add(res["chunk_id"])
                     all_cases[str(case_id).strip()] = chunks
                 
                 print(f"[CaseAPI] Successfully loaded from {CACHE_FILE}")

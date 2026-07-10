@@ -84,7 +84,7 @@ def main() -> None:
         print(f"[{i}/{len(cases)}] Fetching evidence for case: {cid} ...", end=" ", flush=True)
         t_case = time.perf_counter()
 
-        chunks = get_case_evidence(cid, query, case_fact=fact, force_refresh=args.force)
+        chunks = get_case_evidence(cid, query, case_fact=fact, force_refresh=args.force, case=case)
         
         dt = time.perf_counter() - t_case
         print(f"-> Retrieved {len(chunks)} chunks ({dt:.1f}s)")
