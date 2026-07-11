@@ -17,7 +17,6 @@ if hasattr(sys.stderr, "reconfigure"):
 
 import faiss
 import numpy as np
-import pandas as pd
 from rank_bm25 import BM25Okapi
 
 from configs.config import (

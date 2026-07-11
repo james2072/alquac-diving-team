@@ -43,13 +43,16 @@ from configs.config import (
     PROJECT_ROOT,
     SUBMISSION_FILE,
     TEST_FILE,
-    VERDICT_KEYWORD_BOOST,
-    VERDICT_KEYWORDS,
 )
-from rag_retrieval.evidence_api_client import get_cached_case_queries, get_case_evidence
+from rag_retrieval.evidence_api_client import (
+    CACHE_FILE,
+    _load_cache,
+    get_cached_case_queries,
+    get_case_evidence,
+)
 from rag_retrieval.hybrid_retriever import HybridRetriever
 from rag_retrieval.llm_client import chat
-from rag_retrieval.utils import extract_json_from_text, rule_override, strip_think_tags
+from rag_retrieval.utils import extract_json_from_text, strip_think_tags
 
 VALID_LABELS = {"A_WIN", "PARTIAL_A_WIN", "PARTIAL_B_WIN", "B_WIN"}
 
@@ -147,21 +150,47 @@ Bạn PHẢI trả lời CHỈ DUY NHẤT một object JSON hợp lệ theo đú
   "prediction": "A_WIN" | "PARTIAL_A_WIN" | "PARTIAL_B_WIN" | "B_WIN",
   "reasoning": "Giải thích ngắn gọn căn cứ phán quyết và định lượng tỷ lệ",
   "selected_case_evidence": ["danh_sách_mã_chunk_id_đã_dùng"],
-  "selected_law_evidence": [{"law_id": "mã_luật", "aid": số_điều}]
-}"""
+  "selected_law_evidence": [{"law_id": "mã_luật", "aid": Mã_hệ_thống_AID}]
+}
+Lưu ý quan trọng: Trong field 'aid' của selected_law_evidence, BẮT BUỘC ghi giá trị Mã hệ thống AID (con số nguyên trong ngoặc vuông [Mã hệ thống AID: ...]) tương ứng với Điều luật áp dụng, tuyệt đối không ghi số Điều luật vào field aid!"""
+
+_AID_TO_ARTICLE: dict[int, tuple[str, int]] = {}
+_ARTICLE_TO_AID: dict[tuple[str, int], int] = {}
+
+def _load_article_mappings() -> None:
+    if _AID_TO_ARTICLE:
+        return
+    corpus_path = PROJECT_ROOT / "data" / "corpus" / "corpus_law_pub.json"
+    if corpus_path.exists():
+        try:
+            with open(corpus_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for law in data:
+                lid = str(law.get("law_id", "")).strip()
+                for idx, art in enumerate(law.get("content", [])):
+                    try:
+                        aid = int(art["aid"])
+                        art_num = idx + 1
+                        _AID_TO_ARTICLE[aid] = (lid, art_num)
+                        _ARTICLE_TO_AID[(lid, art_num)] = aid
+                    except (ValueError, KeyError, TypeError):
+                        pass
+        except Exception as e:
+            print(f"  [WARN] Could not load corpus_law_pub.json mappings: {e}")
 
 def _retrieve_evidence(
     case: dict[str, Any], retriever: HybridRetriever, top_k: int, alpha: float
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str, str]:
     """Retrieve both case evidence (API/Cache) and legal text (Hybrid Search)."""
+    _load_article_mappings()
     cid = str(case.get("case_id", "")).strip()
     query = str(case.get("case_query", ""))
     fact = str(case.get("case_fact", ""))
     a_desc = str(case.get("A_description", ""))
     b_desc = str(case.get("B_description", ""))
 
-    # 1. Retrieve case evidence
-    case_ev_data = get_case_evidence(cid, query, case_fact=fact, case=case)
+    # 1. Retrieve case evidence strictly from local disk cache
+    case_ev_data = get_case_evidence(cid, query, case_fact=fact, case=case, strict_cache=True)
     
     if isinstance(case_ev_data, list):
         case_ev_data = sorted(
@@ -187,10 +216,18 @@ def _retrieve_evidence(
     search_query = f"{query}\n{party_context}\n{llm_questions_str}\n{fact[:MAX_FACT_LEN_FOR_SEARCH]}\n{ev_context}"
     rel_laws = retriever.search(search_query, k=top_k, alpha=alpha)
     
-    laws_str = "\n".join(
-        f"- Luật {l['law_id']} Điều {l['aid']}: {str(l['text']).strip()[:MAX_LAW_TEXT_LEN_FOR_PROMPT]}"
-        for l in rel_laws
-    )
+    laws_formatted = []
+    for l in rel_laws:
+        lid = str(l["law_id"]).strip()
+        aid = int(l["aid"])
+        art_info = _AID_TO_ARTICLE.get(aid)
+        if art_info and art_info[0] == lid:
+            art_label = f"Điều {art_info[1]} [Mã hệ thống AID: {aid}]"
+        else:
+            art_label = f"Điều (Mã hệ thống AID: {aid})"
+        snippet = str(l.get("text", "")).strip()[:MAX_LAW_TEXT_LEN_FOR_PROMPT]
+        laws_formatted.append(f"- Luật {lid} | {art_label}: {snippet}")
+    laws_str = "\n".join(laws_formatted)
     
     return case_ev_data, rel_laws, case_ev_str, laws_str
 
@@ -267,16 +304,25 @@ def _parse_and_validate(
     # Submit ALL valid case evidence chunks retrieved (to maximize Case Recall)
     sub_case_ev = [str(r["chunk_id"]) for r in case_ev_data if isinstance(r, dict) and "chunk_id" in r]
 
-    # Validate selected laws
+    # Validate selected laws (supporting both direct AID matches and auto-recovery from Article numbers)
+    _load_article_mappings()
     sub_law_ev: list[dict[str, Any]] = []
     if isinstance(selected_laws, list):
         for le in selected_laws:
             if isinstance(le, dict) and "law_id" in le and "aid" in le:
                 try:
                     lid = str(le["law_id"]).strip()
-                    aid = int(le["aid"])
-                    if (lid, aid) in valid_law_aids:
-                        sub_law_ev.append({"law_id": lid, "aid": aid})
+                    raw_aid = int(le["aid"])
+                    # Check 1: Direct AID match
+                    if (lid, raw_aid) in valid_law_aids:
+                        if not any(x["law_id"] == lid and x["aid"] == raw_aid for x in sub_law_ev):
+                            sub_law_ev.append({"law_id": lid, "aid": raw_aid})
+                    # Check 2: If LLM outputted Article Number (Điều X) instead of AID -> Auto-recover
+                    elif (lid, raw_aid) in _ARTICLE_TO_AID:
+                        mapped_aid = _ARTICLE_TO_AID[(lid, raw_aid)]
+                        if (lid, mapped_aid) in valid_law_aids:
+                            if not any(x["law_id"] == lid and x["aid"] == mapped_aid for x in sub_law_ev):
+                                sub_law_ev.append({"law_id": lid, "aid": mapped_aid})
                 except (ValueError, TypeError):
                     pass
 
@@ -355,6 +401,32 @@ def main() -> None:
     if args.limit:
         cases = cases[:args.limit]
         print(f"[INFO] Debug mode: Processing only the first {len(cases)} cases.")
+
+    print(f"[INFO] Verifying strict offline cache at {CACHE_FILE}...")
+    cache = _load_cache()
+    missing_cases = [
+        str(c.get("case_id", "")).strip()
+        for c in cases
+        if str(c.get("case_id", "")).strip() not in cache
+        or not (
+            isinstance(cache.get(str(c.get("case_id", "")).strip()), (dict, list))
+            and (
+                (isinstance(cache.get(str(c.get("case_id", "")).strip()), dict) and "results" in cache.get(str(c.get("case_id", "")).strip()))
+                or (isinstance(cache.get(str(c.get("case_id", "")).strip()), list))
+            )
+        )
+    ]
+    if missing_cases:
+        raise RuntimeError(
+            f"\n================================================================================\n"
+            f"[ERROR] Strict Offline Pipeline Enforcement: Missing case evidence in cache!\n"
+            f"Found {len(missing_cases)} case(s) without cached evidence (e.g., {missing_cases[:5]}).\n"
+            f"To prevent API calls during label prediction and maintain high Case Recall,\n"
+            f"you MUST prefetch all cases before running generate_submission.\n\n"
+            f"Please run the prefetch step first:\n"
+            f"    python -m rag_retrieval.prefetch_cache\n"
+            f"================================================================================\n"
+        )
 
     print("[INFO] Loading Hybrid Retriever index (FAISS + BM25)...")
     retriever = HybridRetriever.from_disk()

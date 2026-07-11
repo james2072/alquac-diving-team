@@ -42,7 +42,6 @@ EMBEDDING_BATCH_SIZE: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 # ── RAG & Retrieval Hyperparameters ───────────────────────────────────────────
 CHUNK_MIN_TOKENS: int = int(os.getenv("CHUNK_MIN_TOKENS", "10"))
 NUM_RESULTS: int      = int(os.getenv("NUM_RESULTS", "5"))
-DEFAULT_TOP_K_LAWS: int = int(os.getenv("DEFAULT_TOP_K_LAWS", "6"))
 DEFAULT_SUBMISSION_TOP_K: int = int(os.getenv("DEFAULT_SUBMISSION_TOP_K", "10"))
 
 # Reciprocal Rank Fusion (RRF) constants
@@ -57,18 +56,11 @@ MAX_RETRIES: int        = int(os.getenv("MAX_RETRIES", "3"))
 RETRY_DELAY_429: float  = float(os.getenv("RETRY_DELAY_429", "6.0"))
 RETRY_DELAY_NORMAL: float = float(os.getenv("RETRY_DELAY_NORMAL", "5.2"))
 RETRY_DELAY_ERROR: float  = float(os.getenv("RETRY_DELAY_ERROR", "3.0"))
-MAX_CALLS_PER_CASE: int = int(os.getenv("MAX_CALLS_PER_CASE", "6"))
 MIN_SCORE: float        = float(os.getenv("MIN_SCORE", "0.5"))
-DEFAULT_MAX_CHUNKS: int = int(os.getenv("DEFAULT_MAX_CHUNKS", "20"))
 
 # Query & Context Truncation limits
 MAX_QUERY_LENGTH: int               = int(os.getenv("MAX_QUERY_LENGTH", "1500"))
-SUB_QUERY_LENGTH: int               = int(os.getenv("SUB_QUERY_LENGTH", "800"))
-MAX_EVIDENCE_LENGTH_FOR_SEARCH: int = int(os.getenv("MAX_EVIDENCE_LENGTH_FOR_SEARCH", "6000"))
-MIN_SEARCH_TEXT_LENGTH: int         = int(os.getenv("MIN_SEARCH_TEXT_LENGTH", "50"))
-MAX_EVIDENCE_LENGTH_FOR_PROMPT: int = int(os.getenv("MAX_EVIDENCE_LENGTH_FOR_PROMPT", "12000"))
 MAX_CASE_EVIDENCE_CHUNK_LEN: int    = int(os.getenv("MAX_CASE_EVIDENCE_CHUNK_LEN", "6000"))
-MAX_LAW_CONTENT_LENGTH: int         = int(os.getenv("MAX_LAW_CONTENT_LENGTH", "3000"))
 MAX_LAW_TEXT_LEN_FOR_PROMPT: int    = int(os.getenv("MAX_LAW_TEXT_LEN_FOR_PROMPT", "6000"))
 MAX_CONTEXT_CHUNKS_FOR_SEARCH: int  = int(os.getenv("MAX_CONTEXT_CHUNKS_FOR_SEARCH", "15"))
 MAX_CONTEXT_CHUNK_LEN_FOR_SEARCH: int = int(os.getenv("MAX_CONTEXT_CHUNK_LEN_FOR_SEARCH", "4000"))
@@ -77,55 +69,6 @@ MAX_FACT_LEN_FOR_SEARCH: int        = int(os.getenv("MAX_FACT_LEN_FOR_SEARCH", "
 # Chunking & Splitting
 MAX_CHUNK_TOKENS: int = int(os.getenv("MAX_CHUNK_TOKENS", "512"))
 CHUNK_STRIDE: int     = int(os.getenv("CHUNK_STRIDE", "256"))
-
-# ── Scoring Bonuses & Keyword Lists ───────────────────────────────────────────
-VERDICT_KEYWORD_BOOST: float  = float(os.getenv("VERDICT_KEYWORD_BOOST", "5.0"))
-CITATION_KEYWORD_BOOST: float = float(os.getenv("CITATION_KEYWORD_BOOST", "2.0"))
-
-VERDICT_KEYWORDS: list[str] = [
-    "quyết định",
-    "tuyên xử",
-    "chấp nhận",
-    "không chấp nhận",
-    "bác yêu cầu",
-    "bác toàn bộ",
-    "bác đơn",
-    "bác bỏ",
-    "án phí",
-    "nhận định của tòa án",
-    "hội đồng xét xử nhận định",
-    "nhận định của hội đồng xét xử",
-]
-
-RULE_KEYWORDS_ACCEPT_ALL: list[str] = [
-    "chấp nhận toàn bộ",
-    "chấp nhận yêu cầu của nguyên đơn",
-    "chấp nhận yêu cầu khởi kiện",
-    "chấp nhận đơn khởi kiện",
-]
-
-RULE_KEYWORDS_REJECT_ALL: list[str] = [
-    "không chấp nhận yêu cầu",
-    "không chấp nhận toàn bộ",
-    "không chấp nhận đơn",
-    "bác toàn bộ",
-    "bác yêu cầu",
-    "bác đơn",
-    "bác bỏ yêu cầu",
-    "không có căn cứ chấp nhận",
-    "không có căn cứ để chấp nhận",
-    "chưa có căn cứ để chấp nhận",
-    "không đủ căn cứ để chấp nhận",
-]
-
-RULE_KEYWORDS_PARTIAL: list[str] = [
-    "chấp nhận một phần",
-    "chấp nhận 1 phần",
-    "một phần yêu cầu",
-    "1 phần yêu cầu",
-    "bác một phần",
-    "bác 1 phần",
-]
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 CORPUS_JSON: Path     = (PROJECT_ROOT / "data" / "corpus" / "corpus_law_pub.json").resolve()
@@ -136,4 +79,4 @@ BM25_INDEX: Path      = (PROJECT_ROOT / "data" / "output" / "law_bm25.pkl").reso
 CACHE_FILE: Path      = (PROJECT_ROOT / "data" / "cache" / "case_evidence_cache.json").resolve()
 TEST_FILE: Path       = (PROJECT_ROOT / "data" / "test" / "ALQAC2026_public_test.json").resolve()
 SUBMISSION_FILE: Path = (PROJECT_ROOT / "submission.json").resolve()
-EXTERNAL_DIR: Path    = (PROJECT_ROOT / "data" / "external").resolve()
+

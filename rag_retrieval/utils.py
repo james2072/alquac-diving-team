@@ -10,12 +10,6 @@ import json
 import re
 from typing import Any
 
-from configs.config import (
-    RULE_KEYWORDS_ACCEPT_ALL,
-    RULE_KEYWORDS_PARTIAL,
-    RULE_KEYWORDS_REJECT_ALL,
-)
-
 
 def strip_think_tags(text: str) -> str:
     """
@@ -53,8 +47,8 @@ def extract_json_from_text(text: str) -> Any | None:
         except (json.JSONDecodeError, TypeError):
             pass
 
-    # Step 2 & 3: Try outermost balanced extract, then scan inner balanced pairs
-    for open_char, close_char in [("[", "]"), ("{", "}")]:
+    # Step 2 & 3: Try outermost balanced extract, then scan inner balanced pairs (prioritizing {...} over [...])
+    for open_char, close_char in [("{", "}"), ("[", "]")]:
         start_idx = text.find(open_char)
         end_idx = text.rfind(close_char)
         if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
@@ -83,40 +77,4 @@ def extract_json_from_text(text: str) -> Any | None:
 
     return None
 
-
-def rule_override(text: str) -> str | None:
-    """
-    Apply deterministic keyword rules and negation filtering to classify court decisions.
-    
-    Returns A_WIN, PARTIAL_A_WIN, PARTIAL_B_WIN, B_WIN, or None if undecided.
-    """
-    if not text:
-        return None
-    t = text.lower()
-
-    has_reject_all = any(kw in t for kw in RULE_KEYWORDS_REJECT_ALL)
-    has_accept_all = any(
-        kw in t
-        and f"không {kw}" not in t
-        and f"chưa {kw}" not in t
-        and f"để {kw}" not in t
-        and f"cứ {kw}" not in t
-        for kw in RULE_KEYWORDS_ACCEPT_ALL
-    )
-    has_partial = any(kw in t for kw in RULE_KEYWORDS_PARTIAL)
-
-    if has_reject_all and not has_accept_all and not has_partial:
-        return "B_WIN"
-    if has_accept_all and not has_reject_all and not has_partial:
-        return "A_WIN"
-    if has_partial or (has_accept_all and has_reject_all):
-        accept_count = sum(1 for kw in ["chấp nhận"] if kw in t)
-        reject_count = sum(
-            1
-            for kw in ["không chấp nhận", "bác", "không có căn cứ", "chưa có căn cứ"]
-            if kw in t
-        )
-        return "PARTIAL_A_WIN" if accept_count > reject_count else "PARTIAL_B_WIN"
-
-    return None
 

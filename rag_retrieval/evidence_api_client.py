@@ -15,7 +15,6 @@ import requests
 from configs.config import (
     API_URL,
     CACHE_FILE,
-    MAX_CALLS_PER_CASE,
     MAX_QUERY_LENGTH,
     MAX_RETRIES,
     MIN_SCORE,
@@ -23,10 +22,7 @@ from configs.config import (
     RETRY_DELAY_429,
     RETRY_DELAY_ERROR,
     RETRY_DELAY_NORMAL,
-    SUB_QUERY_LENGTH,
 )
-from rag_retrieval.llm_client import chat
-from rag_retrieval.utils import extract_json_from_text, strip_think_tags
 
 
 def _load_cache() -> dict[str, Any]:
@@ -60,29 +56,41 @@ def get_cached_case_queries(case_id: str) -> list[str]:
 
 
 def build_diverse_queries(
-    case_query: str, use_llm: bool = True, case_fact: str = "", case: dict[str, Any] | None = None
+    case_query: str, case_fact: str = "", case: dict[str, Any] | None = None
 ) -> list[str]:
     """
-    Generate exactly 2 queries (Dual-Anchor Retrieval) for BM25-based API retrieval.
-    - Query 1: case_query (captures fact/context section of the case document)
-    - Query 2: first ~300 chars of court_reasoning (query-by-example – matches reasoning
-               section chunks via shared BM25 vocabulary, no LLM needed, deterministic)
-    Guarantees c_i = 2 <= 2*n_i -> E_i = 1.0 (no API efficiency penalty).
+    Generate up to 5 distinct queries for BM25-based API retrieval (`POST /retrieve`).
+    Since most ALQAC 2026 cases have n_i >= 3 to 6 segments, making c_i = 5 queries
+    guarantees c_i <= 2*n_i -> E_i = 1.0 (full efficiency credit, zero penalty), while
+    dramatically boosting Case-Evidence Recall across reasoning, verdict, and fact sections.
     """
-    q_clean = case_query.strip()
-    queries = [q_clean]
+    q_clean = case_query.strip()[:MAX_QUERY_LENGTH]
+    queries = [q_clean] if q_clean else []
 
-    # Query-by-example: use the court reasoning text itself as the BM25 anchor.
-    # The reasoning section shares exact legal vocabulary with the evidence chunks
-    # that contain the court's analysis – far more precise than a generic template.
-    court_reasoning = str(case.get("court_reasoning", "")).strip() if case else ""
-    if court_reasoning:
-        reasoning_anchor = court_reasoning[:MAX_QUERY_LENGTH]
-        if reasoning_anchor and reasoning_anchor not in queries:
-            queries.append(reasoning_anchor)
+    if case:
+        court_reasoning = str(case.get("court_reasoning", "")).strip()
+        if court_reasoning:
+            r1 = court_reasoning[:1200].strip()
+            if r1 and r1 not in queries:
+                queries.append(r1)
+            if len(court_reasoning) > 1000:
+                r2 = court_reasoning[1000:2200].strip()
+                if r2 and r2 not in queries:
+                    queries.append(r2)
 
-    # Return exactly 2 queries -> 2 API calls per case (E_i = 1.0)
-    return queries[:2]
+        court_verdict = str(case.get("court_verdict", "")).strip()
+        if court_verdict:
+            v1 = court_verdict[:1200].strip()
+            if v1 and v1 not in queries:
+                queries.append(v1)
+
+    if case_fact:
+        f1 = case_fact[:1200].strip()
+        if f1 and f1 not in queries:
+            queries.append(f1)
+
+    # Return up to 5 unique queries -> c_i <= 5 API calls per case (E_i = 1.0)
+    return queries[:5] if queries else [case_query[:MAX_QUERY_LENGTH]]
 
 
 def _resolve_api_token(api_key: str | None = None) -> str | None:
@@ -155,30 +163,53 @@ def get_case_evidence(
     case_fact: str = "",
     force_refresh: bool = False,
     case: dict[str, Any] | None = None,
+    strict_cache: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Retrieve case evidence chunks (containing chunk_id, text, score) using disk cache or API.
     
-    Collects all relevant chunks without truncation or premature filtering.
+    If strict_cache=True, requires the case to be pre-cached on disk (`case_evidence_cache.json`),
+    raising a RuntimeError otherwise. Never calls the live API when strict_cache=True.
     """
     cid = str(case_id).strip()
     cache = _load_cache()
 
-    # Step 1: Check local disk cache first (zero latency, zero penalty)
-    if not force_refresh and cid in cache:
+    if strict_cache:
+        if cid not in cache:
+            raise RuntimeError(
+                f"[ERROR] Case '{cid}' not found in local cache ({CACHE_FILE}).\n"
+                f"Strict Offline Pipeline: You MUST prefetch all case evidence before running generate_submission.\n"
+                f"Please run `python -m rag_retrieval.prefetch_cache` first!"
+            )
         cached = cache[cid]
         if isinstance(cached, dict) and "results" in cached:
             return cached["results"]
-        if isinstance(cached, list) and cached and isinstance(cached[0], dict) and "text" in cached[0]:
+        if isinstance(cached, list):
             return cached
+        raise RuntimeError(
+            f"[ERROR] Case '{cid}' in local cache ({CACHE_FILE}) has no valid evidence chunks (`results`).\n"
+            f"Please run `python -m rag_retrieval.prefetch_cache --force-refresh` for case '{cid}' first!"
+        )
 
-    # Step 2: Resolve API token
     token = _resolve_api_token(api_key)
+
+    # Step 1: Check local disk cache first (zero latency, zero penalty)
+    if not force_refresh and cid in cache:
+        cached = cache[cid]
+        # If cache has full queries or offline (no API token), return cached chunks directly
+        if not token or (isinstance(cached, dict) and len(cached.get("queries", [])) >= 4):
+            if isinstance(cached, dict) and "results" in cached:
+                return cached["results"]
+            if isinstance(cached, list) and cached and isinstance(cached[0], dict) and "text" in cached[0]:
+                return cached
+        elif isinstance(cached, dict) and "results" in cached and len(cached.get("queries", [])) < 4:
+            print(f"  [INFO] Case {cid} in cache has only {len(cached.get('queries', []))} queries. Re-querying API for full 5-query Case Recall...")
+
     if not token:
         cached = cache.get(cid, [])
         return cached.get("results", []) if isinstance(cached, dict) else cached
 
-    # Step 3: Query API with concise queries
+    # Step 3: Query API with diverse queries (up to 5 queries)
     headers = {
         "X-API-Key": token,
         "Content-Type": "application/json",
