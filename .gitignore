@@ -53,6 +53,8 @@ huggingface/
 *.log
 logs/
 
-submission.json
+submission*.json
 
 references/
+
+scratch/

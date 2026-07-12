@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import random
 import time
-from typing import Any
+from typing import Any, Type, TypeVar
 from openai import OpenAI
+from pydantic import BaseModel
 
 from configs.config import (
     LLM_API_KEY,
@@ -21,6 +22,8 @@ from configs.config import (
     LLM_MODEL,
     LLM_RETRY_SLEEP_SUCCESS,
 )
+
+T = TypeVar("T", bound=BaseModel)
 
 # Singleton client instance re-used across calls
 _client: OpenAI | None = None
@@ -81,6 +84,56 @@ def chat(
                 if attempt == LLM_MAX_RETRIES - 1:
                     raise e
     return ""
+
+
+def chat_structured(
+    prompt: str,
+    response_format: Type[T],
+    system: str = "",
+    model: str = LLM_MODEL,
+    max_tokens: int = LLM_MAX_TOKENS,
+    temperature: float = LLM_CHAT_TEMPERATURE,
+) -> T | None:
+    """
+    Send a prompt and enforce strict Zod-like schema output matching the Pydantic response_format.
+    
+    Uses OpenAI/Gemini Structured Outputs (`client.beta.chat.completions.parse`) to guarantee
+    exact JSON schema adherence at the token generation level without manual regex parsing.
+    """
+    messages: list[dict[str, str]] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+
+    for attempt in range(LLM_MAX_RETRIES):
+        try:
+            response = _get_client().beta.chat.completions.parse(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                response_format=response_format,
+            )
+            res = response.choices[0].message.parsed
+            time.sleep(LLM_RETRY_SLEEP_SUCCESS)
+            return res
+        except Exception as e:
+            err_str = str(e)
+            is_transient = any(code in err_str for code in ["503", "429", "UNAVAILABLE"])
+            
+            if is_transient and attempt < LLM_MAX_RETRIES - 1:
+                base_wait = min(60, (2 ** attempt) * 4)
+                jitter = random.uniform(1, 4)
+                wait_time = base_wait + jitter
+                print(
+                    f"\n  [LLM RETRY {attempt + 1}/{LLM_MAX_RETRIES}] "
+                    f"Server temporarily busy or rate limited. Waiting {wait_time:.1f}s before retry..."
+                )
+                time.sleep(wait_time)
+            else:
+                if attempt == LLM_MAX_RETRIES - 1:
+                    raise e
+    return None
 
 
 class LMStudioClient:

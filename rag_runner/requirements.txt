@@ -1,0 +1,15 @@
+# ── Section 1: Offline Embedding & Indexing Dependencies (rag_runner/) ─────────
+# Used strictly for corpus preparation, BGE-M3 embedding generation, and index building (Colab / GPU)
+torch>=2.1.1
+sentence-transformers>=2.7.0
+transformers>=4.40.0
+faiss-cpu
+rank_bm25
+pandas
+numpy
+pyarrow>=14.0
+python-dotenv
+tqdm
+underthesea
+# Note: For GPU-accelerated FAISS on Colab/Linux, install via:
+# !pip install faiss-gpu

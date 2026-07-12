@@ -19,6 +19,7 @@ The system strictly decouples online evidence crawling from offline label predic
 3. **Step 2: Offline Verdict Prediction (`generate_submission.py`)**:
    - Reads pre-fetched evidence from disk cache at **zero latency** and retrieves statutory laws via RRF Hybrid Search.
    - Delegates 100% of outcome reasoning to the LLM (`systems prompt` with legal anchors) without any brittle heuristic overrides.
+   - **Strict Zod-like Schema Validation (`schemas.py`)**: Enforces structured output format (`CasePredictionSchema`) using **Pydantic** (`response_format`) to guarantee exact 1-of-4 valid labels (`A_WIN`, `PARTIAL_A_WIN`, `PARTIAL_B_WIN`, `B_WIN`) without manual regex parsing or format hallucination.
    - **Strict Cache Enforcement**: Throws a `RuntimeError` immediately if any case is missing from local cache, ensuring live API calls are never triggered during label generation.
 
 ---
@@ -28,7 +29,6 @@ The system strictly decouples online evidence crawling from offline label predic
 ```
 ALQUAC/                                 ← Root directory
 ├── .env.example                        ← Template for environment variables
-├── requirements.txt                    ← Python package dependencies
 ├── README.md                           ← Project documentation
 ├── configs/                            
 │   └── config.py                       ← Centralized hyperparameters & truncation limits
@@ -37,17 +37,20 @@ ALQUAC/                                 ← Root directory
 │   ├── cache/case_evidence_cache.json  ← Disk cache for case evidence chunks
 │   ├── test/ALQAC2026_public_test.json ← Benchmark test set
 │   └── output/                         ← Parquet embeddings, FAISS, and BM25 indexes
-├── rag_runner/                         ← Offline indexing & embedding pipeline
+├── rag_runner/                         ← Section 1: Offline indexing & embedding pipeline (Colab/GPU)
+│   ├── requirements.txt                ← Standalone dependencies for corpus indexing & Parquet embedding
 │   ├── build_index.py                  ← CLI script to build FAISS & BM25 indexes
 │   ├── corpus_loader.py                ← Parses JSON corpus & applies windowed chunking
 │   ├── embedder.py                     ← Computes BGE-M3 embeddings & Parquet caching
 │   └── indexer.py                      ← Builds FAISS & BM25Okapi indexes
-└── rag_retrieval/                      ← Prediction pipeline & API clients
+└── rag_retrieval/                      ← Section 2: Online prediction & retrieval pipeline
+    ├── requirements.txt                ← Standalone dependencies for hybrid search & LLM inference
     ├── prefetch_cache.py               ← Step 1: Pre-fetcher to crawl & cache case evidence
     ├── generate_submission.py          ← Step 2: Automated prediction & submission builder
     ├── hybrid_retriever.py             ← Hybrid search combining FAISS + BM25 via RRF
     ├── evidence_api_client.py          ← Retrieval API client with strict offline cache check
-    ├── llm_client.py                   ← OpenAI-compatible LLM wrapper
+    ├── schemas.py                      ← Pydantic schemas for Zod-like structured output validation
+    ├── llm_client.py                   ← OpenAI-compatible LLM wrapper with Pydantic structured output support
     ├── test_connection.py              ← Utility to verify LLM endpoint connectivity
     └── utils.py                        ← Shared JSON extraction & text formatting utilities
 ```
@@ -58,12 +61,20 @@ ALQUAC/                                 ← Root directory
 
 ### 1. Install Dependencies & Setup Environment
 
-Ensure you are using Python 3.10+ and install required packages:
+Ensure you are using Python 3.10+. The repository is strictly divided into two independent sections (`rag_runner/` and `rag_retrieval/`), each with its own self-contained `requirements.txt` file:
 
-```bash
-pip install -r requirements.txt
-cp .env.example .env
-```
+- **Section 1: For Offline Indexing on Colab / GPU (`rag_runner/`)**:
+  Used to prepare the legal corpus, compute dense embeddings (`BAAI/bge-m3`), and build `law.faiss` / `law_bm25.pkl` indexes from scratch:
+  ```bash
+  pip install -r rag_runner/requirements.txt
+  ```
+
+- **Section 2: For Online Prediction & Local Evaluation (`rag_retrieval/`)**:
+  Used to query FAISS/BM25 indexes, pre-fetch evidence chunks, and execute structured LLM predictions:
+  ```bash
+  pip install -r rag_retrieval/requirements.txt
+  cp .env.example .env
+  ```
 
 Edit `.env` with your LLM endpoint and competition API credentials:
 ```ini
@@ -75,9 +86,9 @@ NUM_RESULTS=5
 DEFAULT_ALPHA=0.5
 ```
 
-### 2. Build Search Indexes (Run Once)
+### 2. Build Search Indexes (Run Once on Colab/GPU)
 
-Execute the index builder from the **root directory** to generate `law.faiss` and `law_bm25.pkl`:
+Execute the index builder from the **root directory** (typically executed inside Google Colab) to generate `law.faiss` and `law_bm25.pkl`:
 
 ```bash
 python -m rag_runner.build_index

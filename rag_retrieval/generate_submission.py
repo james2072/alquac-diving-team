@@ -51,8 +51,9 @@ from rag_retrieval.evidence_api_client import (
     get_case_evidence,
 )
 from rag_retrieval.hybrid_retriever import HybridRetriever
-from rag_retrieval.llm_client import chat
-from rag_retrieval.utils import extract_json_from_text, strip_think_tags
+from rag_retrieval.llm_client import chat_structured
+from rag_retrieval.schemas import CasePredictionSchema
+from rag_retrieval.utils import strip_think_tags
 
 VALID_LABELS = {"A_WIN", "PARTIAL_A_WIN", "PARTIAL_B_WIN", "B_WIN"}
 
@@ -65,84 +66,108 @@ PHÂN LOẠI PHÁN QUYẾT (bắt buộc chọn đúng 1 trong 4 nhãn sau):
 - A_WIN: Tòa chấp nhận TOÀN BỘ yêu cầu khởi kiện CHÍNH của nguyên đơn (phần Tòa xét trên thực tế). Lưu ý: nếu nguyên đơn TỰ RÚT một số yêu cầu phụ trước khi xét xử, những phần rút đó KHÔNG được tính vào tỷ lệ bị bác — chỉ tính những phần Tòa BÁC sau khi xem xét.
 - PARTIAL_A_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu của nguyên đơn (phần Tòa bác ≠ nguyên đơn tự rút), với tỷ lệ hoặc giá trị được chấp nhận > 50% tổng yêu cầu Tòa xem xét.
 - PARTIAL_B_WIN: Tòa chấp nhận MỘT PHẦN yêu cầu của nguyên đơn, nhưng tỷ lệ hoặc giá trị được chấp nhận <= 50% tổng yêu cầu Tòa xem xét.
-- B_WIN: Tòa BÁC TOÀN BỘ (0%) yêu cầu khởi kiện của nguyên đơn (hoặc không có căn cứ chấp nhận).
+- B_WIN: Tòa BÁC TOÀN BỘ (0%) yêu cầu khởi kiện.
 
-NGUYÊN TẮC SUY LUẬN & ĐỊNH LƯỢNG BẮT BUỘC:
-1. PHÂN BIỆT TỰ RÚT VÀ BỊ BÁC: Khi nguyên đơn tự rút yêu cầu tại phiên tòa (đình chỉ xét xử một phần), phần đó KHÔNG được tính là Tòa bác. Chỉ xét tỷ lệ trên phần Tòa thực sự giải quyết bằng phán quyết nội dung.
 2. PHÂN BIỆT "GHI NHẬN THỎA THUẬN" VÀ "CHẤP NHẬN YÊU CẦU": Khi bản án "Ghi nhận sự tự nguyện thỏa thuận...", đây là thỏa thuận ngoài tòa, KHÔNG phải Tòa chấp nhận yêu cầu khởi kiện. Nếu Tòa bác phần còn lại -> B_WIN. Nếu toàn bộ vụ án được giải quyết bằng thỏa thuận (hòa giải thành) mà Tòa không có phán quyết chấp nhận/bác nội dung -> Trả về nhãn B_WIN.
 3. PHÂN BIỆT "CHẤP NHẬN" THỦ TỤC VÀ NỘI DUNG: Việc Tòa "chấp nhận" [rút yêu cầu / đơn vắng mặt / thẩm quyền...] là thủ tục. Chỉ đánh giá dựa trên từ khóa "chấp nhận / bác YÊU CẦU KHỞI KIỆN" hoặc "chấp nhận / bác YÊU CẦU của nguyên đơn".
 4. ĐỘC LẬP VỚI YÊU CẦU PHẢN TỐ & BÙ TRỪ NGHĨA VỤ: Phân tích CHỈ dựa trên kết quả giải quyết "Yêu cầu khởi kiện của NGUYÊN ĐƠN". Bỏ qua hoàn toàn việc Tòa chấp nhận hay bác "Yêu cầu phản tố của Bị đơn" hoặc "Yêu cầu độc lập của Người liên quan". CHÚ Ý: Nếu Nguyên đơn được Tòa chấp nhận 100% số tiền đòi, nhưng bị Tòa "cấn trừ/bù trừ" vào nợ của Bị đơn (do phản tố) khiến số tiền thực nhận cuối cùng trên bản án ít hơn, thì nhãn của Nguyên đơn VẪN LÀ A_WIN.
-5. ĐỊNH LƯỢNG TOÁN HỌC (ĐỐI VỚI YÊU CẦU TÀI SẢN): Tính tỷ lệ chấp nhận = (Giá trị Tòa chấp nhận) / (Tổng giá trị Nguyên đơn đòi mà Tòa xét). Chấp nhận > 50% -> PARTIAL_A_WIN; <= 50% -> PARTIAL_B_WIN. LƯU Ý QUAN TRỌNG: Nếu Tòa chấp nhận TIỀN GỐC đầy đủ nhưng tính tiền lãi THẤP HƠN yêu cầu, đây là PARTIAL. Phải so sánh tổng số tiền Tòa phán quyết với tổng số tiền nguyên đơn đòi.
+5. ĐỊNH LƯỢNG TOÁN HỌC (ĐỐI VỚI YÊU CẦU TÀI SẢN): Tính tỷ lệ chấp nhận = (Giá trị Tòa chấp nhận) / (Tổng giá trị Nguyên đơn đòi mà Tòa xét). Chấp nhận > 50% -> PARTIAL_A_WIN; <= 50% -> PARTIAL_B_WIN. LƯU Ý QUAN TRỌNG: Nếu Tòa chấp nhận TIỀN GỐC đầy đủ nhưng tính tiền lãi THẤP HƠN yêu cầu, đây là PARTIAL. Phải so sánh tổng số tiền Tòa phán quyết với tổng số tiền nguyên đơn đòi. CHÚ Ý BẪY KHẤU TRỪ TIỀN ĐÃ NHẬN (Deduction Trap): Trong án đòi bồi thường hoặc nợ, nếu Tòa xác định tổng giá trị chấp nhận cho nguyên đơn (VD: xác định giá trị bồi thường căn nhà là 42.560.000đ trên tổng đòi 60.000.000đ), sau đó KHẤU TRỪ đi khoản tiền nguyên đơn đã tạm ứng/nhận trước từ bên thứ ba hoặc bị đơn (VD: khấu trừ 26.880.000đ đã nhận) và tuyên buộc bị đơn c
 6. ĐỊNH TÍNH (ĐỐI VỚI YÊU CẦU PHI TÀI SẢN): Đối với các yêu cầu không bằng tiền (đòi đất, hủy hợp đồng, xin lỗi công khai, ly hôn...):
    - A_WIN: Tòa chấp nhận toàn bộ các yêu cầu cốt lõi.
    - PARTIAL_A_WIN: Tòa chấp nhận yêu cầu quan trọng nhất (VD: Hủy hợp đồng, đòi được đất) nhưng bác các yêu cầu phụ kiện đi kèm.
    - PARTIAL_B_WIN: Tòa bác yêu cầu cốt lõi, chỉ chấp nhận yêu cầu phụ.
    - B_WIN: Tòa bác toàn bộ các yêu cầu phi tài sản.
-7. NHẬN DIỆN PARTIAL ẨN (IMPLICIT PARTIAL): Khi Tòa viết "Chấp nhận yêu cầu khởi kiện" nhưng số tiền phán quyết (hoặc diện tích đất cấp) THẤP HƠN yêu cầu ban đầu -> Đây là PARTIAL.
-8. CHỌN LỌC BẰNG CHỨNG CHUẨN XÁC (`selected_case_evidence` và `selected_law_evidence`):
-   - `selected_case_evidence`: BẮT BUỘC liệt kê chính xác các mã `chunk_id` có chứa phán quyết, nhận định của Tòa án làm căn cứ cho nhãn bạn chọn.
-   - `selected_law_evidence`: BẮT BUỘC liệt kê chính xác các cặp `{"law_id": "...", "aid": ...}` được Tòa áp dụng.
+7. QUY TẮC SOI LỆCH SỐ LIỆU & PARTIAL ẨN (NUMERICAL MISMATCH -> PARTIAL_A_WIN): Khi Tòa viết "Chấp nhận yêu cầu khởi kiện của nguyên đơn..." nhưng trong chi tiết phán quyết có bất kỳ sự điều chỉnh/cắt giảm nào về tiền lãi suất, tiền phạt vi phạm, hoặc diện tích đất đo đạc thực tế lệch nhẹ so với đơn kiện ban đầu -> BẮT BUỘC gán nhãn PARTIAL_A_WIN. TUYỆT ĐỐI không được gán A_WIN!
+8. CHỌN LỌC BẰNG CHỨNG & TRÍCH XUẤT TỐI ĐA ĐIỀU LUẬT (`selected_case_evidence` và `selected_law_evidence`):
+   - `selected_case_evidence`: BẮT BUỘC liệt kê chính xác các mã `chunk_id` có chứa phán quyết làm căn cứ cho nhãn.
+   - `selected_law_evidence`: BẮT BUỘC liệt kê TỐI ĐA TẤT CẢ các cặp `{"law_id": "...", "aid": ...}` có xuất hiện trong phần Căn cứ hoặc Áp dụng của Tòa án (thường từ 6 đến 15 điều luật). Bạn PHẦR PHẢI trích xuất đầy đủ cả các điều luật nội dung (BLDS, Luật Đất đai...) VÀ toàn bộ các điều luật thủ tục tố tụng/án phí (BLTTDS 2015 Điều 26, 35, 39, 147, 227, Nghị quyết án phí...). LƯU Ý CỰC KỲ QUAN TRỌNG: Trong field `aid`, bạn BẮT BUỘC phải ghi con số Mã hệ thống AID (con số trong ngoặc vuông `[Mã hệ thống AID: ...]`), TUYỆT ĐỐI KHÔNG GHI SỐ ĐIỀU LUẬT!
+9. QUY TẮC THỐNG NHẤT VỀ CHẤP NHẬN MỘT PHẦN (PARTIAL) CHO MỌI LOẠI ÁN:
+   - Bất kể là vụ án tranh chấp tài sản, đất đai, hợp đồng hay thừa kế/chia tài sản chung: Nếu Tòa án tuyên phán quyết có từ khóa "Chấp nhận một phần yêu cầu khởi kiện" hoặc thực tế Tòa án BÁC bất kỳ phần yêu cầu nội dung nào của nguyên đơn (như yêu cầu bồi thường, chia theo tỷ lệ, yêu cầu phụ trợ kèm theo...), thì BẮT BUỘC phải phân loại là PARTIAL_A_WIN (khi phần được chấp nhận chiếm ưu thế > 50% hoặc là yêu cầu cốt lõi nhất) hoặc PARTIAL_B_WIN (khi phần được chấp nhận <= 50% hoặc chỉ là phần phụ). TUYỆT ĐỐI KHÔNG được gán nhãn A_WIN cho các bản án mà Tòa tuyên chấp nhận một phần hoặc có bác bỏ một phần nội dung.
+10. QUY TẮC LỖI HỖN HỢP (CHÍNH XÁC 50%):
+    - Trong án bồi thường thiệt hại ngoài hợp đồng, nếu Tòa xác định "lỗi hỗn hợp" và buộc bị đơn bồi thường ĐÚNG BẰNG 50% (tỷ lệ >= 50%) số tiền nguyên đơn yêu cầu -> Gán nhãn PARTIAL_A_WIN.
+11. QUY TẮC TRỌNG SỐ YÊU CẦU CỐT LÕI vs PHỤ KHI KHÔNG CÓ TỔNG TIỀN:
+    - Nếu nguyên đơn thắng được yêu cầu mục đích chính (đòi được đất/nhà, trả được nợ gốc, hủy sổ đỏ) và chỉ bị bác các khoản phụ (lãi suất, bồi thường thêm) -> PARTIAL_A_WIN (> 50%).
+    - Nếu nguyên đơn bị bác yêu cầu chính, chỉ được chấp nhận yêu cầu phụ (như hoàn trả tiền sửa chữa, tiền cọc) -> PARTIAL_B_WIN (<= 50%).
 
 VÍ DỤ SUY LUẬN MẪU (COMPREHENSIVE FEW-SHOT EXAMPLES):
 
 [VÍ DỤ 1 - A_WIN: CHẤP NHẬN TOÀN BỘ]
 - Đầu vào: Nguyên đơn đòi bị đơn trả số tiền vay 500.000.000 đồng và tiền lãi suất 50.000.000 đồng theo Hợp đồng vay ngày 10/01/2020.
 - Bằng chứng: `[case_101_chunk_3]` Tòa án nhận định hợp đồng vay là hợp pháp. Bị đơn vi phạm nghĩa vụ thanh toán theo thỏa thuận. Quyết định: Chấp nhận toàn bộ yêu cầu khởi kiện của nguyên đơn, buộc bị đơn trả cho nguyên đơn đủ 550.000.000 đồng.
-- Điều luật: `- Luật 91/2015/QH13 Điều 466: Nghĩa vụ trả nợ của bên vay...`
+- Điều luật: `- Luật 91/2015/QH13 | Điều 466 [Mã hệ thống AID: 53236]: Nghĩa vụ trả nợ của bên vay...`, `- Luật 92/2015/QH13 | Điều 147 [Mã hệ thống AID: 52917]: Vị phí tố tụng...`
 - Đầu ra JSON:
 {
   "prediction": "A_WIN",
   "reasoning": "Tòa án xác định hợp đồng hợp pháp và bị đơn vi phạm nghĩa vụ thanh toán theo Điều 466 BLDS 2015. Tòa chấp nhận toàn bộ 100% yêu cầu trả nợ gốc và lãi (550 triệu đồng).",
   "selected_case_evidence": ["case_101_chunk_3"],
-  "selected_law_evidence": [{"law_id": "91/2015/QH13", "aid": 466}]
+  "selected_law_evidence": [
+    {"law_id": "91/2015/QH13", "aid": 53236},
+    {"law_id": "92/2015/QH13", "aid": 52917}
+  ]
 }
 
-[VÍ DỤ 2 - PARTIAL_A_WIN: CHẤP NHẬN MỘT PHẦN > 50%]
-- Đầu vào: Nguyên đơn khởi kiện đòi bồi thường thiệt hại do tai nạn tổng số tiền 100.000.000 đồng (gồm chi phí điều trị viện phí 70.000.000 đồng và bồi thường tổn thất tinh thần 30.000.000 đồng).
-- Bằng chứng: `[case_202_chunk_2]` Tòa xét thấy bị đơn có lỗi gây ra tai nạn nên phải chịu trách nhiệm bồi thường chi phí điều trị y tế thực tế là 70.000.000 đồng. Đối với khoản tổn thất tinh thần 30.000.000 đồng không có cơ sở chứng minh nên không được chấp nhận. Quyết định: Chấp nhận một phần yêu cầu khởi kiện của nguyên đơn, buộc bị đơn bồi thường 70.000.000 đồng.
-- Điều luật: `- Luật 91/2015/QH13 Điều 584: Căn cứ phát sinh trách nhiệm bồi thường...`, `- Luật 91/2015/QH13 Điều 590: Thiệt hại do sức khỏe bị xâm phạm...`
+[VÍ DỤ 2 - PARTIAL_A_WIN: CHẤP NHẬN MỘT PHẦN > 50% VÀ TRÍCH XUẤT TỐI ĐA ĐIỀU LUẬT]
+- Đầu vào: Nguyên đơn khởi kiện đòi bồi thường thiệt hại do tai nạn tổng số tiền 100.000.000 đồng (gồm viện phí 70.000.000 đồng và tổn thất tinh thần 30.000.000 đồng).
+- Bằng chứng: `[case_202_chunk_2]` Áp dụng các Điều 26, 35, 39, 147, 227 Bộ luật Tố tụng Dân sự 2015; Điều 584, 590 Bộ luật Dân sự 2015; Nghị quyết số 326/2016/UBTVQH14. Quyết định: Chấp nhận một phần yêu cầu khởi kiện, buộc bị đơn bồi thường viện phí 70.000.000 đồng, bác yêu cầu bồi thường tổn thất tinh thần.
+- Điều luật: `- Luật 91/2015/QH13 | Điều 584 [Mã hệ thống AID: 53354]...`, `- Luật 91/2015/QH13 | Điều 590 [Mã hệ thống AID: 53360]...`, `- Luật 92/2015/QH13 | Điều 26 [Mã hệ thống AID: 52796]...`, `- Luật 92/2015/QH13 | Điều 35 [Mã hệ thống AID: 52805]...`, `- Luật 92/2015/QH13 | Điều 39 [Mã hệ thống AID: 52809]...`, `- Luật 92/2015/QH13 | Điều 147 [Mã hệ thống AID: 52917]...`, `- Luật 92/2015/QH13 | Điều 227 [Mã hệ thống AID: 52997]...`, `- Luật 326/2016/UBTVQH14 | Điều 26 [Mã hệ thống AID: 50691]...`
 - Đầu ra JSON:
 {
   "prediction": "PARTIAL_A_WIN",
-  "reasoning": "Tòa chấp nhận phần bồi thường viện phí hợp lệ là 70.000.000 đồng trên tổng yêu cầu 100.000.000 đồng (đạt tỷ lệ 70% > 50%), bác phần yêu cầu tổn thất tinh thần. Căn cứ theo Điều 584 và 590 BLDS 2015.",
+  "reasoning": "Tòa chấp nhận phần bồi thường viện phí 70.000.000 đồng trên tổng yêu cầu 100.000.000 đồng (đạt tỷ lệ 70% > 50%), bác phần yêu cầu tổn thất tinh thần. Trích xuất đầy đủ 8 căn cứ pháp lý nội dung và thủ tục Tòa đã áp dụng.",
   "selected_case_evidence": ["case_202_chunk_2"],
-  "selected_law_evidence": [{"law_id": "91/2015/QH13", "aid": 584}, {"law_id": "91/2015/QH13", "aid": 590}]
+  "selected_law_evidence": [
+    {"law_id": "91/2015/QH13", "aid": 53354},
+    {"law_id": "91/2015/QH13", "aid": 53360},
+    {"law_id": "92/2015/QH13", "aid": 52796},
+    {"law_id": "92/2015/QH13", "aid": 52805},
+    {"law_id": "92/2015/QH13", "aid": 52809},
+    {"law_id": "92/2015/QH13", "aid": 52917},
+    {"law_id": "92/2015/QH13", "aid": 52997},
+    {"law_id": "326/2016/UBTVQH14", "aid": 50691}
+  ]
 }
 
 [VÍ DỤ 3 - PARTIAL_B_WIN: CHẤP NHẬN MỘT PHẦN <= 50%]
-- Đầu vào: Nguyên đơn yêu cầu buộc bị đơn thanh toán tiền phạt vi phạm hợp đồng 200.000.000 đồng và bồi thường thiệt hại kinh doanh 300.000.000 đồng (tổng yêu cầu là 500.000.000 đồng).
-- Bằng chứng: `[case_303_chunk_1]` Tòa nhận định thỏa thuận phạt vi phạm 150.000.000 đồng là đúng quy định. Tuy nhiên nguyên đơn không cung cấp được chứng cứ chứng minh thiệt hại thực tế 300.000.000 đồng nên bác yêu cầu này. Quyết định: Chấp nhận một phần yêu cầu khởi kiện, buộc bị đơn thanh toán tiền phạt vi phạm 150.000.000 đồng.
-- Điều luật: `- Luật 36/2005/QH11 Điều 300: Phạt vi phạm...`
+- Đầu vào: Nguyên đơn yêu cầu thanh toán tiền phạt vi phạm 200.000.000 đồng và bồi thường thiệt hại 300.000.000 đồng (tổng 500.000.000 đồng).
+- Bằng chứng: `[case_303_chunk_1]` Tòa chấp nhận tiền phạt vi phạm 150.000.000 đồng, bác phần bồi thường thiệt hại do thiếu chứng cứ. Quyết định: Chấp nhận một phần yêu cầu khởi kiện.
+- Điều luật: `- Luật 36/2005/QH11 | Điều 300 [Mã hệ thống AID: 52870]...`, `- Luật 92/2015/QH13 | Điều 147 [Mã hệ thống AID: 52917]...`
 - Đầu ra JSON:
 {
   "prediction": "PARTIAL_B_WIN",
-  "reasoning": "Tòa chấp nhận yêu cầu phạt vi phạm 150.000.000 đồng trên tổng số 500.000.000 đồng nguyên đơn đòi (đạt tỷ lệ 30% <= 50%), bác phần bồi thường thiệt hại do thiếu chứng cứ theo Điều 300 Luật Thương mại 2005.",
+  "reasoning": "Tòa chấp nhận yêu cầu phạt vi phạm 150.000.000 đồng trên tổng số 500.000.000 đồng nguyên đơn đòi (đạt tỷ lệ 30% <= 50%), bác phần bồi thường theo Điều 300 Luật Thương mại 2005.",
   "selected_case_evidence": ["case_303_chunk_1"],
-  "selected_law_evidence": [{"law_id": "36/2005/QH11", "aid": 300}]
+  "selected_law_evidence": [
+    {"law_id": "36/2005/QH11", "aid": 52870},
+    {"law_id": "92/2015/QH13", "aid": 52917}
+  ]
 }
 
 [VÍ DỤ 4 - B_WIN: BÁC TOÀN BỘ YÊU CẦU / YÊU CẦU PHI TÀI SẢN]
 - Đầu vào: Nguyên đơn yêu cầu công nhận di chúc viết tay ngày 12/05/2018 là hợp pháp và chia di sản thừa kế theo di chúc.
-- Bằng chứng: `[case_404_chunk_5]` Tòa án giám định và kết luận di chúc viết tay không tuân thủ quy định pháp luật, người lập di chúc khi đó mất năng lực hành vi dân sự. Quyết định: Bác toàn bộ yêu cầu khởi kiện của nguyên đơn.
-- Điều luật: `- Luật 91/2015/QH13 Điều 630: Điều kiện hợp pháp của di chúc...`
+- Bằng chứng: `[case_404_chunk_5]` Tòa kết luận di chúc viết tay không tuân thủ quy định pháp luật. Quyết định: Bác toàn bộ yêu cầu khởi kiện của nguyên đơn.
+- Điều luật: `- Luật 91/2015/QH13 | Điều 630 [Mã hệ thống AID: 53393]...`
 - Đầu ra JSON:
 {
   "prediction": "B_WIN",
-  "reasoning": "Di chúc viết tay vi phạm điều kiện có hiệu lực pháp luật theo Điều 630 BLDS 2015. Tòa bác toàn bộ 100% yêu cầu cốt lõi (phi tài sản) của nguyên đơn.",
+  "reasoning": "Di chúc viết tay vi phạm điều kiện có hiệu lực pháp luật theo Điều 630 BLDS 2015. Tòa bác toàn bộ 100% yêu cầu cốt lõi của nguyên đơn.",
   "selected_case_evidence": ["case_404_chunk_5"],
-  "selected_law_evidence": [{"law_id": "91/2015/QH13", "aid": 630}]
+  "selected_law_evidence": [
+    {"law_id": "91/2015/QH13", "aid": 53393}
+  ]
 }
 
 [VÍ DỤ 5 - A_WIN: ĐỘC LẬP VỚI PHẢN TỐ & BÙ TRỪ NGHĨA VỤ]
-- Đầu vào: Nguyên đơn yêu cầu bị đơn trả tiền hàng 1.000.000.000 đồng. Bị đơn phản tố yêu cầu nguyên đơn bồi thường vi phạm hợp đồng 300.000.000 đồng.
-- Bằng chứng: `[case_505_chunk_4]` Tòa xét thấy yêu cầu trả tiền hàng 1.000.000.000 đồng của nguyên đơn là có cơ sở. Yêu cầu phản tố 300.000.000 đồng của bị đơn cũng có cơ sở. Quyết định: Chấp nhận yêu cầu của nguyên đơn (1 tỷ), chấp nhận yêu cầu phản tố của bị đơn (300 triệu). Đối trừ nghĩa vụ, buộc bị đơn thanh toán cho nguyên đơn 700.000.000 đồng.
-- Điều luật: `- Luật 91/2015/QH13 Điều 378: Bù trừ nghĩa vụ...`
+- Đầu vào: Nguyên đơn đòi tiền hàng 1.000.000.000 đồng. Bị đơn phản tố đòi bồi thường 300.000.000 đồng.
+- Bằng chứng: `[case_505_chunk_4]` Tòa chấp nhận yêu cầu của nguyên đơn (1 tỷ), chấp nhận yêu cầu phản tố của bị đơn (300 triệu). Đối trừ nghĩa vụ, buộc bị đơn thanh toán cho nguyên đơn 700.000.000 đồng.
+- Điều luật: `- Luật 91/2015/QH13 | Điều 378 [Mã hệ thống AID: 53241]...`
 - Đầu ra JSON:
 {
   "prediction": "A_WIN",
-  "reasoning": "Tòa án chấp nhận 100% yêu cầu khởi kiện của nguyên đơn (1.000.000.000 đồng). Việc số tiền thực nhận giảm xuống 700.000.000 đồng là do bù trừ nghĩa vụ với yêu cầu phản tố của bị đơn theo Điều 378 BLDS 2015, không phải do Tòa bác yêu cầu của nguyên đơn.",
+  "reasoning": "Tòa án chấp nhận 100% yêu cầu khởi kiện của nguyên đơn (1.000.000.000 đồng). Số tiền thực nhận giảm xuống 700.000.000 đồng là do bù trừ nghĩa vụ với yêu cầu phản tố theo Điều 378 BLDS 2015, không phải do Tòa bác yêu cầu.",
   "selected_case_evidence": ["case_505_chunk_4"],
-  "selected_law_evidence": [{"law_id": "91/2015/QH13", "aid": 378}]
+  "selected_law_evidence": [
+    {"law_id": "91/2015/QH13", "aid": 53241}
+  ]
 }
 
 Bạn PHẢI trả lời CHỈ DUY NHẤT một object JSON hợp lệ theo đúng định dạng (tuyệt đối không thêm bất kỳ văn bản giải thích nào ngoài JSON):
@@ -213,8 +238,9 @@ def _retrieve_evidence(
     llm_questions_str = "\n".join(cached_queries[1:]) if len(cached_queries) > 1 else ""
     party_context = f"{a_desc[:300]} {b_desc[:300]}".strip()
     
-    search_query = f"{query}\n{party_context}\n{llm_questions_str}\n{fact[:MAX_FACT_LEN_FOR_SEARCH]}\n{ev_context}"
-    rel_laws = retriever.search(search_query, k=top_k, alpha=alpha)
+    # Combined search query: Substantive claim, party roles, LLM investigative questions, facts & evidence context
+    q_combined = f"{query}\n{party_context}\n{llm_questions_str}\n{fact[:MAX_FACT_LEN_FOR_SEARCH]}\n{ev_context}"
+    rel_laws = retriever.search(q_combined, k=top_k, alpha=alpha)
     
     laws_formatted = []
     for l in rel_laws:
@@ -274,69 +300,81 @@ Hãy phân tích kỹ QUYẾT ĐỊNH và NHẬN ĐỊNH của Tòa án (nếu c
 
 
 def _parse_and_validate(
-    raw_resp: str,
+    parsed: CasePredictionSchema | None,
     cid: str,
     case_ev_data: list[dict[str, Any]],
     rel_laws: list[dict[str, Any]],
     valid_law_aids: set[tuple[str, int]],
 ) -> dict[str, Any]:
-    """Parse JSON and validate selected evidence and labels."""
-    clean_resp = strip_think_tags(raw_resp)
-    
-    pred = "B_WIN"  # Default fallback
-    selected_laws: list[Any] = []
-    
-    parsed = extract_json_from_text(clean_resp)
-    if isinstance(parsed, list) and parsed:
-        parsed = next((item for item in parsed if isinstance(item, dict)), {})
-    
-    if isinstance(parsed, dict) and parsed:
-        candidate = str(parsed.get("prediction", "")).strip()
-        if candidate in VALID_LABELS:
-            pred = candidate
-        else:
-            print(f"\n  [WARN] Case {cid}: Invalid label '{candidate}'. Falling back to B_WIN.")
-        
-        selected_laws = parsed.get("selected_law_evidence", [])
-    else:
-        print(f"\n  [WARN] Case {cid}: No valid JSON block found in LLM output.")
+    """Validate structured Pydantic output (`CasePredictionSchema`)."""
+    pred: str | None = parsed.prediction if parsed and parsed.prediction in VALID_LABELS else None
 
     # Submit ALL valid case evidence chunks retrieved (to maximize Case Recall)
     sub_case_ev = [str(r["chunk_id"]) for r in case_ev_data if isinstance(r, dict) and "chunk_id" in r]
 
-    # Validate selected laws (supporting both direct AID matches and auto-recovery from Article numbers)
+    # Validate and recover selected laws
     _load_article_mappings()
     sub_law_ev: list[dict[str, Any]] = []
-    if isinstance(selected_laws, list):
-        for le in selected_laws:
-            if isinstance(le, dict) and "law_id" in le and "aid" in le:
-                try:
-                    lid = str(le["law_id"]).strip()
-                    raw_aid = int(le["aid"])
-                    # Check 1: Direct AID match
-                    if (lid, raw_aid) in valid_law_aids:
-                        if not any(x["law_id"] == lid and x["aid"] == raw_aid for x in sub_law_ev):
-                            sub_law_ev.append({"law_id": lid, "aid": raw_aid})
-                    # Check 2: If LLM outputted Article Number (Điều X) instead of AID -> Auto-recover
-                    elif (lid, raw_aid) in _ARTICLE_TO_AID:
-                        mapped_aid = _ARTICLE_TO_AID[(lid, raw_aid)]
-                        if (lid, mapped_aid) in valid_law_aids:
-                            if not any(x["law_id"] == lid and x["aid"] == mapped_aid for x in sub_law_ev):
-                                sub_law_ev.append({"law_id": lid, "aid": mapped_aid})
-                except (ValueError, TypeError):
-                    pass
 
-    # Fallback to top retrieved laws if LLM failed to pick correctly
-    if not sub_law_ev:
-        sub_law_ev = [
-            {"law_id": str(l["law_id"]).strip(), "aid": int(l["aid"])}
-            for l in rel_laws[:4]
-            if (str(l["law_id"]).strip(), int(l["aid"])) in valid_law_aids
-        ]
+    def _normalize_lid(raw_lid: str) -> str:
+        clean = raw_lid.strip()
+        for _, (real_l, _) in _AID_TO_ARTICLE.items():
+            if clean == real_l:
+                return real_l
+        lower = clean.lower()
+        aliases = {
+            "91/2015/QH13": ["dân sự năm 2015", "dân sư\u0323 năm 2015", "dân sự 2015", "bộ luật dân sự", "blds 2015", "blds"],
+            "92/2015/QH13": ["tố tụng dân sự năm 2015", "tố tụng dân sự", "bộ luật tố tụng dân sự", "blttds", "blttds 2015"],
+            "33/2005/QH11": ["dân sự năm 2005", "dân sự 2005"],
+            "36/2005/QH11": ["thương mại năm 2005", "thương mại 2005", "thương mại"],
+            "26/2008/QH12": ["thi hành án dân sự"],
+            "52/2014/QH13": ["hôn nhân và gia đình", "hôn nhân gia đình", "hngđ", "luật hôn nhân gia đình"],
+            "45/2013/QH13": ["lao động", "luật lao động 2013", "bộ luật lao động"],
+            "66/2014/QH13": ["kinh doanh bất động sản"],
+            "45/2019/QH14": ["lao động năm 2019", "lao động 2019"],
+            "326/2016/UBTVQH14": ["326/2016", "nghị quyết số 326", "án phí"],
+        }
+        for true_l, keywords in aliases.items():
+            if true_l.lower() == lower:
+                return true_l
+            for kw in keywords:
+                if kw in lower:
+                    return true_l
+        return clean
+
+    if parsed and parsed.selected_law_evidence:
+        for le in parsed.selected_law_evidence:
+            try:
+                lid = _normalize_lid(str(le.law_id).strip())
+                raw_aid = int(le.aid)
+
+                # Check 1: Direct unique AID match across entire system index
+                if raw_aid in _AID_TO_ARTICLE:
+                    real_lid, _ = _AID_TO_ARTICLE[raw_aid]
+                    if not any(x["aid"] == raw_aid for x in sub_law_ev):
+                        sub_law_ev.append({"law_id": real_lid, "aid": raw_aid})
+                    continue
+
+                # Check 2: If LLM outputted Article Number (Điều X) instead of AID -> recover via normalized lid + art_num
+                if (lid, raw_aid) in _ARTICLE_TO_AID:
+                    mapped_aid = _ARTICLE_TO_AID[(lid, raw_aid)]
+                    if not any(x["aid"] == mapped_aid for x in sub_law_ev):
+                        sub_law_ev.append({"law_id": lid, "aid": mapped_aid})
+                    continue
+
+                # Check 3: If normalized lid didn't match exactly, check against valid retrieved candidate articles
+                for v_lid, v_aid in valid_law_aids:
+                    if v_aid in _AID_TO_ARTICLE and _AID_TO_ARTICLE[v_aid][1] == raw_aid:
+                        if (v_lid == lid) or ("91/2015" in lid and "91/2015" in v_lid) or ("92/2015" in lid and "92/2015" in v_lid):
+                            if not any(x["aid"] == v_aid for x in sub_law_ev):
+                                sub_law_ev.append({"law_id": v_lid, "aid": v_aid})
+                            break
+            except (ValueError, TypeError):
+                pass
 
     return {
         "case_id": str(cid),
-        "prediction": str(pred),
+        "prediction": pred,
         "case_evidence": sub_case_ev,
         "law_evidence": sub_law_ev,
     }
@@ -350,8 +388,6 @@ def predict_case(
 ) -> dict[str, Any]:
     """Execute prediction pipeline for a single case."""
     cid = str(case.get("case_id", "unknown")).strip()
-    query = str(case.get("case_query", ""))
-    fact = str(case.get("case_fact", ""))
 
     if retriever.valid_law_aids is None:
         retriever.valid_law_aids = {
@@ -364,9 +400,32 @@ def predict_case(
     )
 
     user_prompt = _build_prompt(case, case_ev_str, laws_str)
-    raw_resp = chat(prompt=user_prompt, system=SYSTEM_PROMPT, temperature=LLM_TEMPERATURE)
     
-    res = _parse_and_validate(raw_resp, cid, case_ev_data, rel_laws, retriever.valid_law_aids)
+    max_retries = 3
+    res: dict[str, Any] = _parse_and_validate(None, cid, case_ev_data, rel_laws, retriever.valid_law_aids)
+    for attempt in range(max_retries):
+        try:
+            parsed = chat_structured(
+                prompt=user_prompt,
+                response_format=CasePredictionSchema,
+                system=SYSTEM_PROMPT,
+                temperature=LLM_TEMPERATURE,
+            )
+            res = _parse_and_validate(parsed, cid, case_ev_data, rel_laws, retriever.valid_law_aids)
+            if res.get("prediction") in VALID_LABELS:
+                return res
+        except Exception as e:
+            print(f"\n  [WARN] Attempt {attempt + 1}/{max_retries} encountered API error: {e}")
+            res = _parse_and_validate(None, cid, case_ev_data, rel_laws, retriever.valid_law_aids)
+            
+        if attempt < max_retries - 1:
+            print(f"\n  [RETRY {attempt + 1}/{max_retries}] Case {cid} returned invalid prediction or error. Waiting 4.0s before retry...")
+            time.sleep(4.0)
+
+    # If all retries exhausted and LLM still returned None/invalid, prevent script crash by defaulting prediction
+    if res.get("prediction") not in VALID_LABELS:
+        print(f"\n  [ERROR] All {max_retries} LLM attempts failed to produce a valid label for {cid}. Setting fallback prediction to B_WIN to prevent crash.")
+        res["prediction"] = "B_WIN"
 
     return res
 

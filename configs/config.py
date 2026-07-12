@@ -42,7 +42,7 @@ EMBEDDING_BATCH_SIZE: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 # ── RAG & Retrieval Hyperparameters ───────────────────────────────────────────
 CHUNK_MIN_TOKENS: int = int(os.getenv("CHUNK_MIN_TOKENS", "10"))
 NUM_RESULTS: int      = int(os.getenv("NUM_RESULTS", "5"))
-DEFAULT_SUBMISSION_TOP_K: int = int(os.getenv("DEFAULT_SUBMISSION_TOP_K", "10"))
+DEFAULT_SUBMISSION_TOP_K: int = int(os.getenv("DEFAULT_SUBMISSION_TOP_K", "12"))
 
 # Reciprocal Rank Fusion (RRF) constants
 RRF_K: int                = int(os.getenv("RRF_K", "60"))
