@@ -177,7 +177,14 @@ Bạn PHẢI trả lời CHỈ DUY NHẤT một object JSON hợp lệ theo đú
   "selected_case_evidence": ["danh_sách_mã_chunk_id_đã_dùng"],
   "selected_law_evidence": [{"law_id": "mã_luật", "aid": Mã_hệ_thống_AID}]
 }
-Lưu ý quan trọng: Trong field 'aid' của selected_law_evidence, BẮT BUỘC ghi giá trị Mã hệ thống AID (con số nguyên trong ngoặc vuông [Mã hệ thống AID: ...]) tương ứng với Điều luật áp dụng, tuyệt đối không ghi số Điều luật vào field aid!"""
+Lưu ý quan trọng: Trong field 'aid' của selected_law_evidence, BẮT BUỘC ghi giá trị Mã hệ thống AID (con số nguyên trong ngoặc vuông [Mã hệ thống AID: ...]) tương ứng với Điều luật áp dụng, tuyệt đối không ghi số Điều luật vào field aid!
+
+CHẾ ĐỘ SUY LUẬN TỪ EVIDENCE (khi không có TÌNH TIẾT CHI TIẾT hoặc QUYẾT ĐỊNH TÒA):
+Khi dữ liệu đầu vào CHỈ CÓ tóm tắt yêu cầu khởi kiện và bằng chứng thu thập được (evidence chunks), bạn phải:
+1. ƯU TIÊN TÌM PHÁN QUYẾT TRONG EVIDENCE CHUNKS: Evidence chunks thường chứa trích đoạn bản án gốc. Tìm keyword: "Quyết định", "Chấp nhận toàn bộ", "Chấp nhận một phần", "Bác toàn bộ", "Buộc", "Tuyên xử", "đình chỉ xét xử".
+2. NẾU TÌM THẤY PHÁN QUYẾT TRONG EVIDENCE → áp dụng quy tắc phân loại nhãn (A_WIN/PARTIAL_A_WIN/PARTIAL_B_WIN/B_WIN) như bình thường.
+3. NẾU KHÔNG TÌM THẤY PHÁN QUYẾT → suy luận dựa trên tình tiết trong evidence, loại tranh chấp, chứng cứ hợp đồng/giấy tờ, và điều luật áp dụng.
+4. Evidence chunks có thể chứa cả nhận định của Hội đồng xét xử → đây là nguồn quan trọng nhất để xác định nhãn."""
 
 _AID_TO_ARTICLE: dict[int, tuple[str, int]] = {}
 _ARTICLE_TO_AID: dict[tuple[str, int], int] = {}
@@ -239,7 +246,12 @@ def _retrieve_evidence(
     party_context = f"{a_desc[:300]} {b_desc[:300]}".strip()
     
     # Combined search query: Substantive claim, party roles, LLM investigative questions, facts & evidence context
-    q_combined = f"{query}\n{party_context}\n{llm_questions_str}\n{fact[:MAX_FACT_LEN_FOR_SEARCH]}\n{ev_context}"
+    if fact or party_context:
+        # Full mode (public test): rich context available
+        q_combined = f"{query}\n{party_context}\n{llm_questions_str}\n{fact[:MAX_FACT_LEN_FOR_SEARCH]}\n{ev_context}"
+    else:
+        # Evidence-only mode (private test): maximize use of query + retrieved evidence context
+        q_combined = f"{query}\n{llm_questions_str}\n{ev_context}\n{query}"
     rel_laws = retriever.search(q_combined, k=top_k, alpha=alpha)
     
     laws_formatted = []
@@ -259,28 +271,38 @@ def _retrieve_evidence(
 
 
 def _build_prompt(case: dict[str, Any], case_ev_str: str, laws_str: str) -> str:
-    """Construct the user prompt for the LLM including full case metadata, party roles, query, and detailed facts."""
+    """Construct the user prompt for the LLM.
+    
+    Supports two modes:
+    - Full mode: When case has rich metadata (fact, verdict, reasoning, party descriptions).
+    - Evidence-only mode: When case only has case_id + case_query (e.g., private test).
+    """
     query = str(case.get("case_query", ""))
-    fact = str(case.get("case_fact", ""))
-    case_type = str(case.get("case_type", "Dân sự"))
-    court_level = str(case.get("court_level", "Sơ thẩm"))
-    a_role = str(case.get("A_role", "Nguyên đơn"))
-    a_desc = str(case.get("A_description", ""))
-    b_role = str(case.get("B_role", "Bị đơn"))
-    b_desc = str(case.get("B_description", ""))
+    fact = str(case.get("case_fact", "")).strip()
+    case_type = str(case.get("case_type", "")).strip()
+    court_level = str(case.get("court_level", "")).strip()
+    a_role = str(case.get("A_role", "")).strip()
+    a_desc = str(case.get("A_description", "")).strip()
+    b_role = str(case.get("B_role", "")).strip()
+    b_desc = str(case.get("B_description", "")).strip()
     court_verdict = str(case.get("court_verdict", "")).strip()
     court_reasoning = str(case.get("court_reasoning", "")).strip()
 
-    party_info = f"- {a_role} (Bên A - tương ứng nhãn A_WIN): {a_desc if a_desc else '(Không có chi tiết)'}\n- {b_role} (Bên B - tương ứng nhãn B_WIN): {b_desc if b_desc else '(Không có chi tiết)'}"
+    # Detect evidence-only mode: no fact, no verdict, no reasoning
+    has_rich_context = bool(fact or court_verdict or court_reasoning)
 
-    verdict_section = ""
-    if court_verdict:
-        verdict_section += f"\nQUYẾT ĐỊNH CỦA TÒA ÁN (Court Verdict):\n{court_verdict[:MAX_CASE_EVIDENCE_CHUNK_LEN]}"
-    if court_reasoning:
-        verdict_section += f"\n\nNHẬN ĐỊNH CỦA HỘI ĐỒNG XÉT XỬ (Court Reasoning):\n{court_reasoning[:MAX_CASE_EVIDENCE_CHUNK_LEN]}"
+    if has_rich_context:
+        # === FULL MODE (public test with 20 fields) ===
+        party_info = f"- {a_role or 'Nguyên đơn'} (Bên A - tương ứng nhãn A_WIN): {a_desc if a_desc else '(Không có chi tiết)'}\n- {b_role or 'Bị đơn'} (Bên B - tương ứng nhãn B_WIN): {b_desc if b_desc else '(Không có chi tiết)'}"
 
-    return f"""THÔNG TIN TỔNG QUAN VỤ ÁN:
-- Loại vụ án: {case_type} | Cấp xét xử: {court_level}
+        verdict_section = ""
+        if court_verdict:
+            verdict_section += f"\nQUYẾT ĐỊNH CỦA TÒA ÁN (Court Verdict):\n{court_verdict[:MAX_CASE_EVIDENCE_CHUNK_LEN]}"
+        if court_reasoning:
+            verdict_section += f"\n\nNHẬN ĐỊNH CỦA HỘI ĐỒNG XÉT XỬ (Court Reasoning):\n{court_reasoning[:MAX_CASE_EVIDENCE_CHUNK_LEN]}"
+
+        return f"""THÔNG TIN TỔNG QUAN VỤ ÁN:
+- Loại vụ án: {case_type or 'Dân sự'} | Cấp xét xử: {court_level or 'Sơ thẩm'}
 {party_info}
 
 TÓM TẮT YÊU CẦU KHỞI KIỆN / TRANH CHẤP:
@@ -297,6 +319,28 @@ BẰNG CHỨNG THU THẬP ĐƯỢC:
 {laws_str if laws_str else "(Không tìm thấy điều luật liên quan)"}
 
 Hãy phân tích kỹ QUYẾT ĐỊNH và NHẬN ĐỊNH của Tòa án (nếu có), tư cách các bên, yêu cầu khởi kiện, tình tiết chi tiết và quy định pháp luật để xác định kết quả xét xử. Trả về đúng định dạng JSON yêu cầu."""
+    else:
+        # === EVIDENCE-ONLY MODE (private test with 2 fields) ===
+        return f"""THÔNG TIN VỤ ÁN (Chế độ Evidence-Only — chỉ có tóm tắt yêu cầu khởi kiện):
+{query}
+
+LƯU Ý QUAN TRỌNG: Bạn KHÔNG có tình tiết chi tiết, KHÔNG có quyết định hay nhận định trực tiếp của Tòa.
+Bạn phải phân tích DỰA HOÀN TOÀN vào:
+1. NỘI DUNG YÊU CẦU KHỞI KIỆN ở trên (xác định loại tranh chấp, các bên, số tiền, yêu cầu cụ thể)
+2. BẰNG CHỨNG THU THẬP ĐƯỢC (evidence chunks từ hồ sơ vụ án — có thể chứa phán quyết/nhận định Tòa)
+3. ĐIỀU LUẬT LIÊN QUAN
+
+BẰNG CHỨNG THU THẬP ĐƯỢC:
+{case_ev_str if case_ev_str else "(Không có chứng cứ bổ sung)"}
+
+ĐIỀU LUẬT LIÊN QUAN:
+{laws_str if laws_str else "(Không tìm thấy điều luật liên quan)"}
+
+HƯỚNG DẪN SUY LUẬN:
+- TÌM PHÁN QUYẾT TRONG EVIDENCE: Tìm keyword "Chấp nhận", "Bác", "Quyết định", "Buộc", "Tuyên xử" trong evidence chunks
+- Nếu evidence chứa phán quyết/nhận định Tòa → dùng chúng để xác định nhãn chính xác theo các quy tắc phân loại
+- Nếu evidence không có phán quyết → suy luận dựa trên tình tiết, chứng cứ, và luật pháp áp dụng
+- Trả về đúng định dạng JSON yêu cầu."""
 
 
 def _parse_and_validate(

@@ -55,6 +55,102 @@ def get_cached_case_queries(case_id: str) -> list[str]:
 
 
 
+def _generate_llm_search_queries(case_query: str) -> list[str]:
+    """Use LLM to generate diverse search queries targeting different aspects of a case.
+
+    When only case_query is available (private test), the LLM generates queries that
+    target verdict, reasoning, facts, and legal basis sections of the case file,
+    dramatically improving evidence recall compared to substring splitting.
+
+    Returns up to 4 queries (caller prepends original case_query as Q1).
+    Falls back to empty list on LLM failure (caller will use rule-based fallback).
+    """
+    import re as _re
+
+    from rag_retrieval.llm_client import chat
+
+    prompt = f"""Từ tóm tắt vụ án dưới đây, hãy sinh CHÍNH XÁC 4 câu truy vấn (search queries) chứa các TỪ KHÓA QUAN TRỌNG để tìm kiếm bằng chứng trong cơ sở dữ liệu bản án (hệ thống dùng thuật toán BM25 khớp từ khóa).
+KHÔNG dùng câu văn dài dòng giải thích. Hãy kết hợp thông tin cụ thể của vụ án (tên người, loại tranh chấp, số tiền, số thửa đất) với các TỪ KHÓA CẤU TRÚC BẢN ÁN.
+
+Sinh 4 câu truy vấn nhắm vào 4 phần của bản án:
+1. PHÁN QUYẾT: Kết hợp thông tin vụ án với từ khóa phần quyết định (VD: Quyết định Tuyên xử chấp nhận toàn bộ yêu cầu khởi kiện buộc bồi thường...)
+2. NHẬN ĐỊNH: Kết hợp thông tin vụ án với từ khóa phần nhận định (VD: Xét thấy Hội đồng xét xử nhận định hợp đồng chuyển nhượng vô hiệu...)
+3. TÌNH TIẾT: Tập trung đặc tả chi tiết (VD: Hợp đồng vay tài sản biên nhận tiền quyền sử dụng đất thế chấp...)
+4. PHÁP LÝ: Kết hợp thông tin vụ án với thuật ngữ luật (VD: Áp dụng Bộ luật Dân sự Luật Đất đai căn cứ pháp lý giải quyết tranh chấp...)
+
+TÓM TẮT VỤ ÁN:
+{case_query}
+
+YÊU CẦU: Trả về ĐÚNG 4 dòng. Mỗi dòng là 1 chuỗi từ khóa (keywords) cô đọng dài 20-50 từ. KHÔNG dùng từ nối thừa (như "Câu truy vấn về", "Hãy tìm"). Không đánh số thứ tự (1., 2., ...)."""
+
+    try:
+        response = chat(prompt=prompt, temperature=0.3, max_tokens=1500)
+        raw_lines = [l.strip() for l in response.strip().split('\n') if l.strip()]
+
+        clean_lines: list[str] = []
+        for line in raw_lines:
+            # Strip numbering prefixes: "1.", "1)", "- ", "•", etc.
+            cleaned = _re.sub(r'^[\d]+[.):\-]\s*', '', line).strip()
+            cleaned = _re.sub(r'^[-•*]\s*', '', cleaned).strip()
+            if cleaned and len(cleaned) > 30 and cleaned not in clean_lines:
+                clean_lines.append(cleaned[:MAX_QUERY_LENGTH])
+        
+        if clean_lines:
+            print(f"  [LLM-QGen] Generated {len(clean_lines[:4])} smart search queries from case_query.")
+        return clean_lines[:4]
+    except Exception as e:
+        print(f"  [WARN] LLM query generation failed: {e}. Falling back to rule-based expansion.")
+        return []
+
+
+def _expand_query_variants(queries: list[str], case_query: str) -> None:
+    """Rule-based fallback: expand queries from case_query when LLM query generation fails.
+
+    Generates up to 4 additional query variants using heuristic strategies:
+      1. Legal-keyword-focused query emphasising the dispute type and claims.
+      2. Latter segment of case_query (often contains specific claims/amounts).
+      3. Middle segment of case_query (often contains party details and facts).
+      4. Claim-amount-focused variant extracting monetary values.
+    """
+    import re
+
+    # Strategy 1: Legal keyword focus
+    keyword_patterns = [
+        "hợp đồng", "chuyển nhượng", "thế chấp", "tín dụng", "vay",
+        "bồi thường", "thừa kế", "di chúc", "đặt cọc", "tranh chấp",
+        "hủy", "vô hiệu", "quyền sử dụng đất", "tài sản", "nợ",
+        "lãi suất", "phạt", "giấy chứng nhận", "hụi", "góp vốn",
+        "ly hôn", "chia tài sản", "lao động", "sa thải", "công nhận",
+    ]
+    found_keywords = [kw for kw in keyword_patterns if kw in case_query.lower()]
+    if found_keywords:
+        q_keywords = f"Tranh chấp {' '.join(found_keywords[:6])}. {case_query[-400:]}"
+        if q_keywords.strip() not in queries:
+            queries.append(q_keywords.strip()[:MAX_QUERY_LENGTH])
+
+    # Strategy 2: Latter third of case_query (claims, amounts, demands)
+    if len(case_query) > 300:
+        q_latter = case_query[len(case_query) // 3:].strip()
+        if q_latter and q_latter not in queries:
+            queries.append(q_latter[:MAX_QUERY_LENGTH])
+
+    # Strategy 3: Middle segment (party details, dispute context)
+    if len(case_query) > 400:
+        mid_start = len(case_query) // 5
+        mid_end = 4 * len(case_query) // 5
+        q_mid = case_query[mid_start:mid_end].strip()
+        if q_mid and q_mid not in queries:
+            queries.append(q_mid[:MAX_QUERY_LENGTH])
+
+    # Strategy 4: Extract monetary amounts + surrounding context
+    money_pattern = re.compile(r'[\d.,]+(?:\.\d{3})*\s*(?:đồng|đ|triệu|tỷ)')
+    money_matches = money_pattern.findall(case_query)
+    if money_matches and len(queries) < 5:
+        q_money = f"Yêu cầu thanh toán {' '.join(money_matches[:3])}. {case_query[:300]}"
+        if q_money.strip() not in queries:
+            queries.append(q_money.strip()[:MAX_QUERY_LENGTH])
+
+
 def build_diverse_queries(
     case_query: str, case_fact: str = "", case: dict[str, Any] | None = None
 ) -> list[str]:
@@ -88,6 +184,18 @@ def build_diverse_queries(
         f1 = case_fact[:1200].strip()
         if f1 and f1 not in queries:
             queries.append(f1)
+
+    # When only case_query is available (e.g., private test), use LLM to generate
+    # smart diverse queries targeting verdict, reasoning, facts, and legal basis.
+    # Falls back to rule-based expansion if LLM fails.
+    if len(queries) <= 1 and q_clean:
+        llm_queries = _generate_llm_search_queries(q_clean)
+        if llm_queries:
+            for lq in llm_queries:
+                if lq not in queries:
+                    queries.append(lq)
+        else:
+            _expand_query_variants(queries, q_clean)
 
     # Return up to 5 unique queries -> c_i <= 5 API calls per case (E_i = 1.0)
     return queries[:5] if queries else [case_query[:MAX_QUERY_LENGTH]]
