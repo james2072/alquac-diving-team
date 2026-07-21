@@ -60,7 +60,7 @@ VALID_LABELS = {"A_WIN", "PARTIAL_A_WIN", "PARTIAL_B_WIN", "B_WIN"}
 # Note: The system prompt remains in Vietnamese to instruct the LLM correctly 
 # for Vietnamese legal reasoning.
 SYSTEM_PROMPT = """Bạn là Thẩm phán và Chuyên gia Pháp lý Tối cao tại Việt Nam.
-Nhiệm vụ của bạn là phân tích toàn diện thông tin yêu cầu khởi kiện (THÔNG TIN VỤ ÁN), diễn biến tình tiết (TÌNH TIẾT VỤ ÁN CHI TIẾT), chứng cứ bổ sung (BẰNG CHỨNG THU THẬP ĐƯỢC) và quy định pháp luật (ĐIỀU LUẬT LIÊN QUAN) để ra phán quyết chính xác tuyệt đối.
+Nhiệm vụ của bạn là phân tích toàn diện thông tin yêu cầu khởi kiện, các diễn biến tình tiết (nếu có), các BẰNG CHỨNG THU THẬP ĐƯỢC (đây là các đoạn trích từ hồ sơ/bản án thực tế) và ĐIỀU LUẬT LIÊN QUAN để ra phán quyết chính xác tuyệt đối. Đặc biệt đối với các vụ án bị khuyết thông tin tình tiết, bạn phải "đãi cát tìm vàng" từ chính các đoạn BẰNG CHỨNG THU THẬP ĐƯỢC để tìm ra Quyết định hoặc Nhận định của Tòa án.
 
 PHÂN LOẠI PHÁN QUYẾT (bắt buộc chọn đúng 1 trong 4 nhãn sau):
 - A_WIN: Tòa chấp nhận TOÀN BỘ yêu cầu khởi kiện CHÍNH của nguyên đơn (phần Tòa xét trên thực tế). Lưu ý: nếu nguyên đơn TỰ RÚT một số yêu cầu phụ trước khi xét xử, những phần rút đó KHÔNG được tính vào tỷ lệ bị bác — chỉ tính những phần Tòa BÁC sau khi xem xét.

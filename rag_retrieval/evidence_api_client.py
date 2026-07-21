@@ -103,53 +103,6 @@ YÊU CẦU: Trả về ĐÚNG 4 dòng. Mỗi dòng là 1 chuỗi từ khóa (key
         return []
 
 
-def _expand_query_variants(queries: list[str], case_query: str) -> None:
-    """Rule-based fallback: expand queries from case_query when LLM query generation fails.
-
-    Generates up to 4 additional query variants using heuristic strategies:
-      1. Legal-keyword-focused query emphasising the dispute type and claims.
-      2. Latter segment of case_query (often contains specific claims/amounts).
-      3. Middle segment of case_query (often contains party details and facts).
-      4. Claim-amount-focused variant extracting monetary values.
-    """
-    import re
-
-    # Strategy 1: Legal keyword focus
-    keyword_patterns = [
-        "hợp đồng", "chuyển nhượng", "thế chấp", "tín dụng", "vay",
-        "bồi thường", "thừa kế", "di chúc", "đặt cọc", "tranh chấp",
-        "hủy", "vô hiệu", "quyền sử dụng đất", "tài sản", "nợ",
-        "lãi suất", "phạt", "giấy chứng nhận", "hụi", "góp vốn",
-        "ly hôn", "chia tài sản", "lao động", "sa thải", "công nhận",
-    ]
-    found_keywords = [kw for kw in keyword_patterns if kw in case_query.lower()]
-    if found_keywords:
-        q_keywords = f"Tranh chấp {' '.join(found_keywords[:6])}. {case_query[-400:]}"
-        if q_keywords.strip() not in queries:
-            queries.append(q_keywords.strip()[:MAX_QUERY_LENGTH])
-
-    # Strategy 2: Latter third of case_query (claims, amounts, demands)
-    if len(case_query) > 300:
-        q_latter = case_query[len(case_query) // 3:].strip()
-        if q_latter and q_latter not in queries:
-            queries.append(q_latter[:MAX_QUERY_LENGTH])
-
-    # Strategy 3: Middle segment (party details, dispute context)
-    if len(case_query) > 400:
-        mid_start = len(case_query) // 5
-        mid_end = 4 * len(case_query) // 5
-        q_mid = case_query[mid_start:mid_end].strip()
-        if q_mid and q_mid not in queries:
-            queries.append(q_mid[:MAX_QUERY_LENGTH])
-
-    # Strategy 4: Extract monetary amounts + surrounding context
-    money_pattern = re.compile(r'[\d.,]+(?:\.\d{3})*\s*(?:đồng|đ|triệu|tỷ)')
-    money_matches = money_pattern.findall(case_query)
-    if money_matches and len(queries) < 5:
-        q_money = f"Yêu cầu thanh toán {' '.join(money_matches[:3])}. {case_query[:300]}"
-        if q_money.strip() not in queries:
-            queries.append(q_money.strip()[:MAX_QUERY_LENGTH])
-
 
 def build_diverse_queries(
     case_query: str, case_fact: str = "", case: dict[str, Any] | None = None
@@ -187,15 +140,12 @@ def build_diverse_queries(
 
     # When only case_query is available (e.g., private test), use LLM to generate
     # smart diverse queries targeting verdict, reasoning, facts, and legal basis.
-    # Falls back to rule-based expansion if LLM fails.
     if len(queries) <= 1 and q_clean:
         llm_queries = _generate_llm_search_queries(q_clean)
         if llm_queries:
             for lq in llm_queries:
                 if lq not in queries:
                     queries.append(lq)
-        else:
-            _expand_query_variants(queries, q_clean)
 
     # Return up to 5 unique queries -> c_i <= 5 API calls per case (E_i = 1.0)
     return queries[:5] if queries else [case_query[:MAX_QUERY_LENGTH]]
