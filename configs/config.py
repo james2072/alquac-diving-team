@@ -5,9 +5,6 @@ To switch LLM source, only change these 3 variables in .env:
     LLM_API_KEY   – your personal API key for the endpoint
     LLM_BASE_URL  – base URL of the OpenAI-compatible API
     LLM_MODEL     – model name as recognized by that endpoint
-
-Different providers (Google AI Studio, OpenAI, Ollama …) speak the same
-OpenAI-compatible protocol, so no other code needs to change.
 """
 from __future__ import annotations
 
@@ -23,10 +20,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 # ── LLM Configuration (OpenAI-compatible) ─────────────────────────────────────
-LLM_API_KEY: str  = os.getenv("LLM_API_KEY", "")                 # Personal API key
-LLM_BASE_URL: str = os.getenv("LLM_BASE_URL",                     # Endpoint base URL
-                               "https://generativelanguage.googleapis.com/v1beta/openai/")
-LLM_MODEL: str    = os.getenv("LLM_MODEL", "gemini-2.5-flash")    # Model name
+LLM_API_KEY: str  = os.getenv("LLM_API_KEY", "")
+LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "")
+LLM_MODEL: str    = os.getenv("LLM_MODEL", "")
 
 LLM_MAX_RETRIES: int         = int(os.getenv("LLM_MAX_RETRIES", "8"))
 LLM_RETRY_SLEEP_SUCCESS: int = int(os.getenv("LLM_RETRY_SLEEP_SUCCESS", "2"))
@@ -42,10 +38,15 @@ EMBEDDING_BATCH_SIZE: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 # ── RAG & Retrieval Hyperparameters ───────────────────────────────────────────
 CHUNK_MIN_TOKENS: int = int(os.getenv("CHUNK_MIN_TOKENS", "10"))
 NUM_RESULTS: int      = int(os.getenv("NUM_RESULTS", "5"))
+
+# TOP-K: Number of statutory law articles retrieved per case for LLM context (default: 12)
 DEFAULT_SUBMISSION_TOP_K: int = int(os.getenv("DEFAULT_SUBMISSION_TOP_K", "12"))
 
 # Reciprocal Rank Fusion (RRF) constants
 RRF_K: int                = int(os.getenv("RRF_K", "60"))
+
+# ALPHA: RRF weight balancing dense vector search (FAISS) vs lexical keyword search (BM25). 
+# 0.5 = 50% FAISS + 50% BM25 balance; > 0.5 favors semantic search; < 0.5 favors keyword search.
 DEFAULT_ALPHA: float      = float(os.getenv("DEFAULT_ALPHA", "0.5"))
 CANDIDATE_MULTIPLIER: int = int(os.getenv("CANDIDATE_MULTIPLIER", "5"))
 
@@ -77,6 +78,5 @@ FAISS_INDEX: Path     = (PROJECT_ROOT / "data" / "output" / "law.faiss").resolve
 BM25_INDEX: Path      = (PROJECT_ROOT / "data" / "output" / "law_bm25.pkl").resolve()
 
 CACHE_FILE: Path      = (PROJECT_ROOT / "data" / "cache" / "case_evidence_cache.json").resolve()
-TEST_FILE: Path       = (PROJECT_ROOT / "data" / "test" / "ALQAC2026_public_test.json").resolve()
+TEST_FILE: Path       = (PROJECT_ROOT / "data" / "test" / "ALQUAC_test.json").resolve()
 SUBMISSION_FILE: Path = (PROJECT_ROOT / "submission.json").resolve()
-

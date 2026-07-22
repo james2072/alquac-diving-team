@@ -1,13 +1,10 @@
 """
-llm_client.py – OpenAI-compatible LLM client wrapper.
-
-All supported endpoints (Google AI Studio, OpenAI, Ollama, LM Studio, etc.)
-speak the standard OpenAI Chat Completions protocol. Switch providers simply by
-changing LLM_API_KEY, LLM_BASE_URL, and LLM_MODEL in .env without code changes.
+llm_client.py – LLM client wrapper.
 """
 from __future__ import annotations
 
 import random
+import re
 import time
 from typing import Any, Type, TypeVar
 from openai import OpenAI
@@ -22,6 +19,13 @@ from configs.config import (
     LLM_MODEL,
     LLM_RETRY_SLEEP_SUCCESS,
 )
+
+
+def strip_think_tags(text: str) -> str:
+    """Remove <think>...</think> reasoning blocks produced by reasoning LLMs."""
+    if not text:
+        return ""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -94,32 +98,40 @@ def chat_structured(
     max_tokens: int = LLM_MAX_TOKENS,
     temperature: float = LLM_CHAT_TEMPERATURE,
 ) -> T | None:
-    """
-    Send a prompt and enforce strict Zod-like schema output matching the Pydantic response_format.
-    
-    Uses OpenAI/Gemini Structured Outputs (`client.beta.chat.completions.parse`) to guarantee
-    exact JSON schema adherence at the token generation level without manual regex parsing.
-    """
+    """Send a prompt and enforce Pydantic schema output matching the response_format."""
+
     messages: list[dict[str, str]] = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
     for attempt in range(LLM_MAX_RETRIES):
-        try:
-            response = _get_client().beta.chat.completions.parse(
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                response_format=response_format,
-            )
-            res = response.choices[0].message.parsed
-            time.sleep(LLM_RETRY_SLEEP_SUCCESS)
-            return res
-        except Exception as e:
-            err_str = str(e)
-            is_transient = any(code in err_str for code in ["503", "429", "UNAVAILABLE"])
+            try:
+                response = _get_client().beta.chat.completions.parse(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    response_format=response_format,
+                )
+                res = response.choices[0].message.parsed
+                if res is not None:
+                    time.sleep(LLM_RETRY_SLEEP_SUCCESS)
+                    return res
+            except Exception as parse_err:
+                # Fallback for local endpoints (LM Studio, Ollama, etc.) that don't support OpenAI beta structured outputs
+                try:
+                    raw_text = chat(prompt=prompt, system=system, model=model, max_tokens=max_tokens, temperature=temperature)
+                    cleaned = strip_think_tags(raw_text)
+                    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+                    if match:
+                        res = response_format.model_validate_json(match.group(0))
+                        return res
+                except Exception:
+                    pass
+
+                err_str = str(parse_err)
+                is_transient = any(code in err_str for code in ["503", "429", "UNAVAILABLE"])
             
             if is_transient and attempt < LLM_MAX_RETRIES - 1:
                 base_wait = min(60, (2 ** attempt) * 4)
@@ -132,7 +144,7 @@ def chat_structured(
                 time.sleep(wait_time)
             else:
                 if attempt == LLM_MAX_RETRIES - 1:
-                    raise e
+                    raise parse_err
     return None
 
 

@@ -6,7 +6,7 @@ eliminating API latency and rate-limit bottlenecks during final submission gener
 Complies strictly with the 1 request/5s rate limit and incremental checkpointing.
 
 Usage:
-    python -m rag_retrieval.prefetch_cache --test-file data/test/ALQAC2026_public_test.json --force
+    python -m rag_retrieval.prefetch_cache
 """
 from __future__ import annotations
 
@@ -36,11 +36,6 @@ def main() -> None:
         type=Path,
         default=TEST_FILE,
         help="Path to the JSON test file.",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force refresh existing cache entries by re-querying the API.",
     )
     parser.add_argument(
         "--limit",
@@ -76,7 +71,7 @@ def main() -> None:
         query = str(case.get("case_query", ""))
         fact = str(case.get("case_fact", ""))
 
-        if not args.force and cid in cache:
+        if cid in cache:
             print(f"[{i}/{len(cases)}] Case: {cid} -> [SKIP] Already cached.")
             skipped_count += 1
             continue
@@ -84,7 +79,7 @@ def main() -> None:
         print(f"[{i}/{len(cases)}] Fetching evidence for case: {cid} ...", end=" ", flush=True)
         t_case = time.perf_counter()
 
-        chunks = get_case_evidence(cid, query, case_fact=fact, force_refresh=args.force, case=case)
+        chunks = get_case_evidence(cid, query, case_fact=fact, case=case)
         
         dt = time.perf_counter() - t_case
         print(f"-> Retrieved {len(chunks)} chunks ({dt:.1f}s)")

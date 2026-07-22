@@ -1,5 +1,5 @@
 """
-test_connection.py – Verify connection to Google AI Studio or configured LLM provider.
+test_connection.py – Verify connection to configured LLM provider.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def main() -> None:
     print(f"API Key    : {masked_key}")
     print("=" * 50)
 
-    if not LLM_API_KEY or LLM_API_KEY == "AIza-your-google-ai-studio-key":
+    if not LLM_API_KEY:
         print("\n❌ ERROR: Please define a valid API key in your .env file at the root folder.\n")
         sys.exit(1)
 

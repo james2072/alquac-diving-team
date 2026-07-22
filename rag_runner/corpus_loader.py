@@ -7,12 +7,19 @@ overlapping windows to preserve semantic context and improve embedding quality.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Iterator
 from transformers import AutoTokenizer
 
 from configs.config import CHUNK_STRIDE, EMBEDDING_MODEL, MAX_CHUNK_TOKENS
-from rag_retrieval.utils import clean_whitespace
+
+
+def clean_whitespace(text: str) -> str:
+    """Collapse multiple whitespace characters and newlines into single spaces."""
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", text).strip()
 
 # Singleton tokenizer matching the embedding model
 _tokenizer: AutoTokenizer | None = None

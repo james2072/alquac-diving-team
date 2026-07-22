@@ -2,7 +2,7 @@
 generate_submission.py – Automated submission pipeline for ALQAC 2026.
 
 Workflow:
-  1. Load test cases from JSON (ALQAC2026_public_test.json).
+  1. Load test cases from JSON (data/test/ALQUAC_test.json).
   2. For each case:
      - Retrieve evidence chunks using API or cache.
      - Retrieve relevant laws using Hybrid Search (FAISS + BM25 + RRF).
@@ -11,7 +11,7 @@ Workflow:
   3. Export results incrementally to submission.json.
 
 Usage:
-    python -m rag_retrieval.generate_submission --test-file data/test/ALQAC2026_public_test.json --output submission.json
+    python -m rag_retrieval.generate_submission
 """
 from __future__ import annotations
 
@@ -53,7 +53,6 @@ from rag_retrieval.evidence_api_client import (
 from rag_retrieval.hybrid_retriever import HybridRetriever
 from rag_retrieval.llm_client import chat_structured
 from rag_retrieval.schemas import CasePredictionSchema
-from rag_retrieval.utils import strip_think_tags
 
 VALID_LABELS = {"A_WIN", "PARTIAL_A_WIN", "PARTIAL_B_WIN", "B_WIN"}
 
@@ -488,8 +487,6 @@ def main() -> None:
         default=SUBMISSION_FILE,
         help="Path to save the resulting submission JSON.",
     )
-    parser.add_argument("--top-k", type=int, default=DEFAULT_SUBMISSION_TOP_K, help="Number of laws to retrieve per case.")
-    parser.add_argument("--alpha", type=float, default=DEFAULT_ALPHA, help="RRF weight balancing FAISS and BM25.")
     parser.add_argument("--limit", type=int, default=None, help="Process only the first N cases (for debugging).")
     args = parser.parse_args()
 
@@ -561,7 +558,7 @@ def main() -> None:
         print(f"[{i}/{len(cases)}] Processing case: {cid} ...", end=" ", flush=True)
         t_case = time.perf_counter()
         
-        result = predict_case(case, retriever, top_k=args.top_k, alpha=args.alpha)
+        result = predict_case(case, retriever)
         submission.append(result)
         completed_ids.add(cid)
         
