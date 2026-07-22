@@ -32,6 +32,7 @@ if str(_project_root) not in sys.path:
     sys.path.append(str(_project_root))
 
 from configs.config import (
+    CORPUS_JSON,
     DEFAULT_ALPHA,
     DEFAULT_SUBMISSION_TOP_K,
     LLM_TEMPERATURE,
@@ -40,7 +41,6 @@ from configs.config import (
     MAX_CONTEXT_CHUNKS_FOR_SEARCH,
     MAX_FACT_LEN_FOR_SEARCH,
     MAX_LAW_TEXT_LEN_FOR_PROMPT,
-    PROJECT_ROOT,
     SUBMISSION_FILE,
     TEST_FILE,
 )
@@ -191,7 +191,7 @@ _ARTICLE_TO_AID: dict[tuple[str, int], int] = {}
 def _load_article_mappings() -> None:
     if _AID_TO_ARTICLE:
         return
-    corpus_path = PROJECT_ROOT / "data" / "corpus" / "corpus_law_pub.json"
+    corpus_path = CORPUS_JSON
     if corpus_path.exists():
         try:
             with open(corpus_path, "r", encoding="utf-8") as f:
@@ -207,7 +207,7 @@ def _load_article_mappings() -> None:
                     except (ValueError, KeyError, TypeError):
                         pass
         except Exception as e:
-            print(f"  [WARN] Could not load corpus_law_pub.json mappings: {e}")
+            print(f"  [WARN] Could not load {CORPUS_JSON.name} mappings: {e}")
 
 def _retrieve_evidence(
     case: dict[str, Any], retriever: HybridRetriever, top_k: int, alpha: float

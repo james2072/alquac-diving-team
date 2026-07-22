@@ -35,7 +35,7 @@ ALQUAC/
 ├── configs/
 │   └── config.py                       # configurations & hyperparameters
 ├── data/
-│   ├── corpus/corpus_law_pub.json      # Vietnamese statutory legal corpus
+│   ├── corpus/corpus_law.json      # Vietnamese statutory legal corpus
 │   ├── cache/case_evidence_cache.json  # Cached case evidence (API)
 │   ├── test/ALQUAC_test.json           # Benchmark evaluation test set
 │   └── output/                         # Embeddings (Parquet), FAISS, and BM25 indexes

@@ -72,7 +72,7 @@ MAX_CHUNK_TOKENS: int = int(os.getenv("MAX_CHUNK_TOKENS", "512"))
 CHUNK_STRIDE: int     = int(os.getenv("CHUNK_STRIDE", "256"))
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-CORPUS_JSON: Path     = (PROJECT_ROOT / "data" / "corpus" / "corpus_law_pub.json").resolve()
+CORPUS_JSON: Path     = (PROJECT_ROOT / "data" / "corpus" / "corpus_law.json").resolve()
 EMBEDDINGS_SAVE: Path = (PROJECT_ROOT / "data" / "output" / "law_embeddings.parquet").resolve()
 FAISS_INDEX: Path     = (PROJECT_ROOT / "data" / "output" / "law.faiss").resolve()
 BM25_INDEX: Path      = (PROJECT_ROOT / "data" / "output" / "law_bm25.pkl").resolve()
