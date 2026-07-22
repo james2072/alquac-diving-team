@@ -1,0 +1,6 @@
+{
+  "parquet_hash": "a08fea0b9b1379737900553392e1937d",
+  "created": "2026-07-22T15:02:47.689547",
+  "embedding_model": "BAAI/bge-m3",
+  "num_chunks": 3145
+}
