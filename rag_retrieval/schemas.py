@@ -17,16 +17,17 @@ class LawEvidenceSchema(BaseModel):
 
 
 class CasePredictionSchema(BaseModel):
-    """Strict Zod-like schema for court verdict prediction and legal evidence selection."""
-    prediction: Literal["A_WIN", "PARTIAL_A_WIN", "PARTIAL_B_WIN", "B_WIN"] = Field(
-        ..., description="Nhãn phán quyết chính xác của vụ án. Bắt buộc chọn đúng 1 trong 4 nhãn."
-    )
+    """Strict Zod-like schema for court verdict prediction and legal evidence selection with Chain-of-Thought ordering."""
     reasoning: str = Field(
-        ..., description="Lý do và phân tích ngắn gọn dẫn tới phán quyết."
+        ..., description="Phân tích pháp lý chi tiết từng bước (Chain-of-Thought): Phân tích yêu cầu khởi kiện, đánh giá chứng cứ thu thập được, áp dụng điều luật liên quan."
     )
     selected_case_evidence: list[str] = Field(
-        default_factory=list, description="Danh sách các mã chunk_id chứa phán quyết/nhận định Tòa án."
+        default_factory=list, description="Danh sách các mã chunk_id chứa phán quyết/nhận định/bằng chứng mấu chốt của vụ án."
     )
     selected_law_evidence: list[LawEvidenceSchema] = Field(
-        default_factory=list, description="Danh sách các điều luật áp dụng (chỉ chọn các mã AID có trong danh sách đã cung cấp)."
+        default_factory=list, description="Danh sách các điều luật áp dụng trực tiếp để giải quyết tranh chấp (chỉ chọn từ danh sách AID được cung cấp)."
     )
+    prediction: Literal["A_WIN", "PARTIAL_A_WIN", "PARTIAL_B_WIN", "B_WIN"] = Field(
+        ..., description="Nhãn phán quyết chính xác cuối cùng của vụ án (A_WIN, PARTIAL_A_WIN, PARTIAL_B_WIN, B_WIN)."
+    )
+

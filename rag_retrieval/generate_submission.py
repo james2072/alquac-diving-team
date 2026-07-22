@@ -96,13 +96,13 @@ VÍ DỤ SUY LUẬN MẪU (COMPREHENSIVE FEW-SHOT EXAMPLES):
 - Điều luật: `- Luật 91/2015/QH13 | Điều 466 [Mã hệ thống AID: 53236]: Nghĩa vụ trả nợ của bên vay...`, `- Luật 92/2015/QH13 | Điều 147 [Mã hệ thống AID: 52917]: Vị phí tố tụng...`
 - Đầu ra JSON:
 {
-  "prediction": "A_WIN",
   "reasoning": "Tòa án xác định hợp đồng hợp pháp và bị đơn vi phạm nghĩa vụ thanh toán theo Điều 466 BLDS 2015. Tòa chấp nhận toàn bộ 100% yêu cầu trả nợ gốc và lãi (550 triệu đồng).",
   "selected_case_evidence": ["case_101_chunk_3"],
   "selected_law_evidence": [
     {"law_id": "91/2015/QH13", "aid": 53236},
     {"law_id": "92/2015/QH13", "aid": 52917}
-  ]
+  ],
+  "prediction": "A_WIN"
 }
 
 [VÍ DỤ 2 - PARTIAL_A_WIN: CHẤP NHẬN MỘT PHẦN > 50% VÀ TRÍCH XUẤT TỐI ĐA ĐIỀU LUẬT]
@@ -111,7 +111,6 @@ VÍ DỤ SUY LUẬN MẪU (COMPREHENSIVE FEW-SHOT EXAMPLES):
 - Điều luật: `- Luật 91/2015/QH13 | Điều 584 [Mã hệ thống AID: 53354]...`, `- Luật 91/2015/QH13 | Điều 590 [Mã hệ thống AID: 53360]...`, `- Luật 92/2015/QH13 | Điều 26 [Mã hệ thống AID: 52796]...`, `- Luật 92/2015/QH13 | Điều 35 [Mã hệ thống AID: 52805]...`, `- Luật 92/2015/QH13 | Điều 39 [Mã hệ thống AID: 52809]...`, `- Luật 92/2015/QH13 | Điều 147 [Mã hệ thống AID: 52917]...`, `- Luật 92/2015/QH13 | Điều 227 [Mã hệ thống AID: 52997]...`, `- Luật 326/2016/UBTVQH14 | Điều 26 [Mã hệ thống AID: 50691]...`
 - Đầu ra JSON:
 {
-  "prediction": "PARTIAL_A_WIN",
   "reasoning": "Tòa chấp nhận phần bồi thường viện phí 70.000.000 đồng trên tổng yêu cầu 100.000.000 đồng (đạt tỷ lệ 70% > 50%), bác phần yêu cầu tổn thất tinh thần. Trích xuất đầy đủ 8 căn cứ pháp lý nội dung và thủ tục Tòa đã áp dụng.",
   "selected_case_evidence": ["case_202_chunk_2"],
   "selected_law_evidence": [
@@ -123,7 +122,8 @@ VÍ DỤ SUY LUẬN MẪU (COMPREHENSIVE FEW-SHOT EXAMPLES):
     {"law_id": "92/2015/QH13", "aid": 52917},
     {"law_id": "92/2015/QH13", "aid": 52997},
     {"law_id": "326/2016/UBTVQH14", "aid": 50691}
-  ]
+  ],
+  "prediction": "PARTIAL_A_WIN"
 }
 
 [VÍ DỤ 3 - PARTIAL_B_WIN: CHẤP NHẬN MỘT PHẦN <= 50%]
@@ -235,22 +235,16 @@ def _retrieve_evidence(
         for r in case_ev_data
     )
 
-    # 2. Retrieve laws by combining query, party descriptions, LLM investigative questions, fact, and retrieved evidence context
-    ev_context = " ".join(
-        [str(r.get("text", '')).strip()[:MAX_CONTEXT_CHUNK_LEN_FOR_SEARCH] 
-         for r in case_ev_data if isinstance(r, dict) and r.get("text")][:MAX_CONTEXT_CHUNKS_FOR_SEARCH]
-    )
+    # 2. Retrieve laws using focused, high-precision legal query (avoiding noisy 60k character evidence text flooding)
     cached_queries = get_cached_case_queries(cid)
     llm_questions_str = "\n".join(cached_queries[1:]) if len(cached_queries) > 1 else ""
     party_context = f"{a_desc[:300]} {b_desc[:300]}".strip()
     
-    # Combined search query: Substantive claim, party roles, LLM investigative questions, facts & evidence context
+    # Combined search query: Substantive claim + LLM investigative query variations + fact summary
     if fact or party_context:
-        # Full mode (public test): rich context available
-        q_combined = f"{query}\n{party_context}\n{llm_questions_str}\n{fact[:MAX_FACT_LEN_FOR_SEARCH]}\n{ev_context}"
+        q_combined = f"{query}\n{party_context}\n{llm_questions_str}\n{fact[:1000]}".strip()
     else:
-        # Evidence-only mode (private test): maximize use of query + retrieved evidence context
-        q_combined = f"{query}\n{llm_questions_str}\n{ev_context}\n{query}"
+        q_combined = f"{query}\n{llm_questions_str}".strip()
     rel_laws = retriever.search(q_combined, k=top_k, alpha=alpha)
     
     laws_formatted = []
@@ -352,8 +346,16 @@ def _parse_and_validate(
     """Validate structured Pydantic output (`CasePredictionSchema`)."""
     pred: str | None = parsed.prediction if parsed and parsed.prediction in VALID_LABELS else None
 
-    # Submit ALL valid case evidence chunks retrieved (to maximize Case Recall)
-    sub_case_ev = [str(r["chunk_id"]) for r in case_ev_data if isinstance(r, dict) and "chunk_id" in r]
+    # Prioritize LLM-selected case evidence chunks, falling back to all retrieved chunks if empty
+    valid_cids = {str(r["chunk_id"]) for r in case_ev_data if isinstance(r, dict) and "chunk_id" in r}
+    sub_case_ev: list[str] = []
+    if parsed and parsed.selected_case_evidence:
+        for cid_item in parsed.selected_case_evidence:
+            clean_cid = str(cid_item).strip()
+            if clean_cid in valid_cids and clean_cid not in sub_case_ev:
+                sub_case_ev.append(clean_cid)
+    if not sub_case_ev:
+        sub_case_ev = [str(r["chunk_id"]) for r in case_ev_data if isinstance(r, dict) and "chunk_id" in r]
 
     # Validate and recover selected laws
     _load_article_mappings()
