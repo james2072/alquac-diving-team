@@ -138,14 +138,26 @@ def build_diverse_queries(
         if f1 and f1 not in queries:
             queries.append(f1)
 
-    # When only case_query is available (e.g., private test), use LLM to generate
-    # smart diverse queries targeting verdict, reasoning, facts, and legal basis.
+    # When only case_query is available (e.g., private test), generate smart diverse queries
     if len(queries) <= 1 and q_clean:
         llm_queries = _generate_llm_search_queries(q_clean)
         if llm_queries:
             for lq in llm_queries:
                 if lq not in queries:
                     queries.append(lq)
+
+    # High-precision verdict-targeted query expansion fallback (ensuring exactly 5 rich queries)
+    if len(queries) < 5 and q_clean:
+        extra_targets = [
+            " quyết định Tòa án chấp nhận bác toàn bộ một phần yêu cầu khởi kiện",
+            " nhận định Hội đồng xét xử bồi thường thiệt hại hủy hợp đồng vô hiệu",
+            " buộc thanh toán hoàn trả tiền vay cọc nợ quyền sử dụng đất",
+            " căn cứ xét xử Tòa án áp dụng Bộ luật Dân sự Luật Đất đai",
+        ]
+        for target in extra_targets:
+            q_ext = (q_clean[:1000] + target).strip()
+            if q_ext not in queries:
+                queries.append(q_ext)
 
     # Return up to 5 unique queries -> c_i <= 5 API calls per case (E_i = 1.0)
     return queries[:5] if queries else [case_query[:MAX_QUERY_LENGTH]]

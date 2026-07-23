@@ -346,7 +346,7 @@ def _parse_and_validate(
     """Validate structured Pydantic output (`CasePredictionSchema`)."""
     pred: str | None = parsed.prediction if parsed and parsed.prediction in VALID_LABELS else None
 
-    # Prioritize LLM-selected case evidence chunks, falling back to all retrieved chunks if empty
+    # Prioritize LLM-selected case evidence chunks, capping at top 2 high-confidence chunks
     valid_cids = {str(r["chunk_id"]) for r in case_ev_data if isinstance(r, dict) and "chunk_id" in r}
     sub_case_ev: list[str] = []
     if parsed and parsed.selected_case_evidence:
@@ -354,8 +354,15 @@ def _parse_and_validate(
             clean_cid = str(cid_item).strip()
             if clean_cid in valid_cids and clean_cid not in sub_case_ev:
                 sub_case_ev.append(clean_cid)
+                if len(sub_case_ev) >= 2:
+                    break
     if not sub_case_ev:
-        sub_case_ev = [str(r["chunk_id"]) for r in case_ev_data if isinstance(r, dict) and "chunk_id" in r]
+        sorted_ev = sorted(
+            [r for r in case_ev_data if isinstance(r, dict) and "chunk_id" in r],
+            key=lambda x: float(x.get("score", 0.0) or 0.0),
+            reverse=True,
+        )
+        sub_case_ev = [str(r["chunk_id"]) for r in sorted_ev[:2]]
 
     # Validate and recover selected laws
     _load_article_mappings()
